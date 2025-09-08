@@ -1,0 +1,24 @@
+# templates/default/.project/project.toml
+
+# --- Metadatos del Proyecto ---
+# Los tokens axes, {{version}}, y {{description}} serán reemplazados por `axes init`.
+name = "pollo"
+version = "0.1.0"
+description = "Una descripción para axes."
+
+# --- Comandos del Proyecto ---
+# Define los verbos de acción para este proyecto.
+# Ejemplo: build = "cargo build"
+[commands]
+hello = "echo Hola desde {name}!"
+pollou = "echo {name}{version}"
+
+# --- Opciones de Axes ---
+# Configura el comportamiento de `axes` para este proyecto.
+# Ejemplo: editor = "code"
+[options]
+
+# --- Variables Personalizadas ---
+# Define tokens para reutilizar en comandos y opciones.
+# Ejemplo: target_dir = "{root}/target"
+[vars]

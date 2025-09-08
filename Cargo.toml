@@ -1,0 +1,31 @@
+[package]
+name = "axes"
+version = "0.1.1-alpha"
+edition = "2024"
+licence = "MIT"
+authors = ["Reynier Ramos González <reynierramos280@gmail.com>"]
+description = "Una CLI para la gestión modular de proyectos."
+
+# Definimos explícitamente nuestro binario
+[[bin]]
+name = "axes"
+path = "src/bin/axes.rs"
+
+[dependencies]
+# Framework para la Interfaz de Línea de Comandos
+clap = { version = "4.5", features = ["derive"] }
+
+# Serialización y Deserialización de Datos (para TOML)
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9"
+
+# Sistema de Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Utilidad para el Manejo de Errores
+thiserror = "2.0"
+dirs = "6.0.0"
+include_dir = "0.7.4"
+dialoguer = "0.12.0"
+opener = "0.8.3"
