@@ -2,9 +2,6 @@
 
 **Estado Actual: v0.1.0-alpha** (Versión de prueba para Windows. ¡Se agradece el feedback!)
 
-![Axes Demo GIF](https://user-images.githubusercontent.com/user/repo/assets/axes-demo.gif)
-*(Nota: Este es un placeholder. Se recomienda crear un GIF real de la TUI y los comandos)*
-
 `axes` es una herramienta de línea de comandos diseñada para unificar, simplificar y automatizar la forma en que interactúas con todos tus proyectos de software, sin importar el lenguaje o la tecnología que utilicen. Actúa como una capa de abstracción universal que te permite gestionar entornos, ejecutar tareas y navegar por tus proyectos con una sintaxis coherente y potente.
 
 ¿Cansado de recordar si debes usar `npm run dev`, `cargo run`, `docker-compose up` o `source .venv/bin/activate` para cada proyecto? Con `axes`, solo necesitas recordar `axes <proyecto> start`.
@@ -45,7 +42,7 @@ Actualmente, `axes` debe ser compilado desde el código fuente.
 1. Clona el repositorio:
 
     ```sh
-    git clone https://github.com/tu-usuario/axes.git
+    git clone https://github.com/Retype15/axes.git
     cd axes
     ```
 
@@ -247,6 +244,6 @@ Esta versión alfa es solo el comienzo. Aquí hay un vistazo a lo que viene:
 
 ## ❤️ Contribuciones y Feedback
 
-¡Este es un proyecto en desarrollo activo! El feedback es increíblemente valioso en esta etapa. Si encuentras un bug, tienes una idea para una nueva característica, o simplemente quieres compartir tu experiencia, por favor [abre un Issue en GitHub](https://github.com/tu-usuario/axes/issues).
+¡Este es un proyecto en desarrollo activo! El feedback es increíblemente valioso en esta etapa. Si encuentras un bug, tienes una idea para una nueva característica, o simplemente quieres compartir tu experiencia, por favor [abre un Issue en GitHub](https://github.com/Retype15/axes/issues).
 
 ---
