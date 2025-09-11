@@ -1,0 +1,15 @@
+name = "src"
+version = "0.1.0"
+description = "A new project managed by axes."
+
+[commands]
+hello = {default="echo 'Hello from {name}!' -- {global_var} ", desc="HOLAS" }
+
+[options]
+at_start = "echo 'Ejecutando at_start... v{version}'"
+
+[vars]
+var_1 = "PITOSOS {name}"
+var_2 = "aaaaa {var_1}"
+
+[env]
