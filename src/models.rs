@@ -10,26 +10,36 @@ use uuid::Uuid;
 // Estos son los que el usuario ve y usa en axes.toml
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum Runnable {
+    Sequence(Vec<String>),
+    Single(String),
+}
+
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ExtendedCommand {
-    pub run: String,
+    pub run: Runnable,
     pub desc: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct PlatformCommand {
     #[serde(default)]
-    pub default: Option<String>,
-    pub windows: Option<String>,
-    pub linux: Option<String>,
-    pub macos: Option<String>,
+    pub default: Option<Runnable>,
+    pub windows: Option<Runnable>,
+    pub linux: Option<Runnable>,  
+    pub macos: Option<Runnable>,  
     pub desc: Option<String>,
 }
+
 
 /// Representa un comando en `axes.toml`. Usa `untagged` para una sintaxis flexible.
 /// Es solo para deserializar desde TOML, no para serializar a bincode.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum Command {
+    Sequence(Vec<String>),
     Simple(String),
     Extended(ExtendedCommand),
     Platform(PlatformCommand),
@@ -176,6 +186,7 @@ pub struct ShellsConfig {
 /// Un `enum` sustituto para `Command` que es explícito y serializable por `bincode`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) enum SerializableCommand {
+    Sequence(Vec<String>),
     Simple(String),
     Extended(ExtendedCommand),
     Platform(PlatformCommand),
@@ -213,6 +224,7 @@ pub(crate) struct SerializableConfigCache {
 impl From<&Command> for SerializableCommand {
     fn from(value: &Command) -> Self {
         match value {
+            Command::Sequence(s) => SerializableCommand::Sequence(s.clone()),
             Command::Simple(s) => SerializableCommand::Simple(s.clone()),
             Command::Extended(e) => SerializableCommand::Extended(e.clone()),
             Command::Platform(p) => SerializableCommand::Platform(p.clone()),
@@ -223,6 +235,7 @@ impl From<&Command> for SerializableCommand {
 impl From<SerializableCommand> for Command {
     fn from(value: SerializableCommand) -> Self {
         match value {
+            SerializableCommand::Sequence(s) => Command::Sequence(s),
             SerializableCommand::Simple(s) => Command::Simple(s),
             SerializableCommand::Extended(e) => Command::Extended(e),
             SerializableCommand::Platform(p) => Command::Platform(p),

@@ -10,6 +10,7 @@ use anyhow::Context;
 use axes::cli::Cli;
 use axes::core::interpolator::Interpolator;
 use axes::system::executor;
+use axes::models::Runnable;
 use axes::system::shell;
 
 use axes::core::graph_display;
@@ -232,12 +233,13 @@ fn handle_run(
     let command_def = config.commands.get(&script_key)
         .ok_or_else(|| anyhow!("Script '{}' no encontrado en la configuración del proyecto.", script_key))?;
 
-    let command_line_template = match command_def {
-        ProjectCommand::Simple(s) => s.clone(),
+    // 1. Obtener el `Runnable` de la definición del comando.
+    let runnable_template = match command_def {
+        ProjectCommand::Sequence(s) => Runnable::Sequence(s.clone()),
+        ProjectCommand::Simple(s) => Runnable::Single(s.clone()),
         ProjectCommand::Extended(ext) => ext.run.clone(),
         ProjectCommand::Platform(pc) => {
-            // Resolver el comando específico para la plataforma actual
-            let os_specific_command = if cfg!(target_os = "windows") {
+            let os_specific_runnable = if cfg!(target_os = "windows") {
                 pc.windows.as_ref()
             } else if cfg!(target_os = "linux") {
                 pc.linux.as_ref()
@@ -247,22 +249,37 @@ fn handle_run(
                 None
             };
             
-            // Usar el comando específico del SO, o el `default` como fallback.
-            os_specific_command.or(pc.default.as_ref())
-                .ok_or_else(|| anyhow!("El script '{}' no tiene una implementación para el sistema operativo actual y no tiene un 'default'.", script_key))?
+            os_specific_runnable.or(pc.default.as_ref())
+                .ok_or_else(|| anyhow!("El script '{}' no tiene una implementación para el SO actual y no tiene un 'default'.", script_key))?
                 .clone()
         }
     };
     
-    // Interpolar los tokens en la línea de comando
-    let interpolator = Interpolator::new(config, &params);
-    let final_command_line = interpolator.interpolate(&command_line_template);
-    
-    println!("\n> {}", final_command_line);
-    
-    // Ejecutar el comando final
-    executor::execute_command(&final_command_line, &config.project_root, &config.env)
-        .map_err(|e| anyhow!(e))
+    // 2. Ejecutar el `Runnable`.
+    let interpolator = axes::core::interpolator::Interpolator::new(config, &params);
+
+    match runnable_template {
+        Runnable::Single(command_template) => {
+            let final_command = interpolator.interpolate(&command_template);
+            println!("\n> {}", final_command);
+            axes::system::executor::execute_command(&final_command, &config.project_root, &config.env)
+                .map_err(|e| anyhow!(e))?;
+        }
+        Runnable::Sequence(command_templates) => {
+            println!("\nEjecutando secuencia de comandos para '{}'...", script_key);
+            for (i, command_template) in command_templates.iter().enumerate() {
+                let final_command = interpolator.interpolate(command_template);
+                println!("\n[{}/{}]> {}", i + 1, command_templates.len(), final_command);
+                
+                // Si cualquier paso falla, `?` detendrá la ejecución y propagará el error.
+                axes::system::executor::execute_command(&final_command, &config.project_root, &config.env)
+                    .map_err(|e| anyhow!(e))?;
+            }
+            println!("\n✔ Secuencia completada con éxito.");
+        }
+    }
+
+    Ok(())
 }
 
 /// Muestra información detallada sobre la configuración resuelta del proyecto.
@@ -289,6 +306,14 @@ fn handle_info(config: &ResolvedConfig) -> Result<()> {
             if let Some(command_def) = config.commands.get(cmd_name) {
                 // **CORRECCIÓN**: El match ahora extrae la struct interna `ext`.
                 match command_def {
+                    ProjectCommand::Sequence(_) => println!("    - {} (secuencia de comandos)", cmd_name),
+                    ProjectCommand::Extended(ext) => {
+                        if let Some(d) = &ext.desc {
+                            println!("    - {} : {}", cmd_name, d);
+                        } else {
+                            println!("    - {}", cmd_name);
+                        }
+                    },
                     ProjectCommand::Simple(_) => {
                         println!("    - {}", cmd_name)
                     },

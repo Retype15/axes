@@ -1,5 +1,6 @@
 // src/system/executor.rs
 
+use dunce;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command as StdCommand, Stdio};
@@ -28,7 +29,9 @@ pub fn execute_command(
         return Err(ExecutionError::EmptyCommand);
     }
 
-    log::info!("Ejecutando comando: '{}' en {:?}", command_line, cwd);
+    let clean_cwd = dunce::simplified(cwd);
+
+    log::info!("Ejecutando comando: '{}' en {:?}", command_line, clean_cwd);
 
     // 1. Usar `shlex` para parsear la línea de comando como lo haría un shell.
     // Esto maneja correctamente las comillas y los espacios.
@@ -59,10 +62,12 @@ pub fn execute_command(
         command = StdCommand::new(program);
         command.args(args);
     }
+
+    //println!("{}", clean_cwd.to_string_lossy());
     
     // 4. Configurar el resto y ejecutar.
     command
-        .current_dir(cwd)
+        .current_dir(clean_cwd)
         .envs(env_vars)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

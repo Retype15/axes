@@ -7,12 +7,12 @@ exit = "echo 'Saliendo....' && exit"
 pause = "pause"
 build = "{v_build}"
 replace = "{v_replace}"
-br = "{v_build} && {v_replace} && echo 'Todo listo!'"
+br = ["{v_build}", "{v_replace}", "echo 'Todo listo!'"]
 
 [options]
 
 [vars]
 v_build = "cargo build --release"
-v_replace = "copy /Y {root}\\target\\release\\axes.exe C:\\scripts\\axes.exe"
+v_replace = "cmd /C copy /Y {root}\\target\\release\\axes.exe C:\\scripts\\axes.exe"
 
 [env]
