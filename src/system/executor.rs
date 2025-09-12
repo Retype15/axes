@@ -3,7 +3,7 @@
 use dunce;
 use std::collections::HashMap;
 use std::io::ErrorKind; // Necesario para la detección de errores
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
 use thiserror::Error;
 
@@ -22,7 +22,7 @@ pub enum ExecutionError {
 /// Ejecuta un comando de sistema de forma robusta y predecible.
 pub fn execute_command(
     command_line: &str,
-    cwd: &PathBuf,
+    cwd: &Path,
     env_vars: &HashMap<String, String>,
 ) -> Result<(), ExecutionError> {
     let trimmed_command = command_line.trim();

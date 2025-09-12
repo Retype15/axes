@@ -115,14 +115,14 @@ fn build_init_script(config: &ResolvedConfig, is_windows: bool) -> String {
     }
 
     // Añadir hook at_start
-    if let Some(at_start) = &config.options.at_start {
-        if !at_start.trim().is_empty() {
-            if is_windows {
-                script.push_str(&format!("call {}\n", at_start));
-            } else {
-                // `source` es más robusto que `.`
-                script.push_str(&format!("source \"{}\" || . \"{}\"\n", at_start, at_start));
-            }
+    if let Some(at_start) = &config.options.at_start
+        && !at_start.trim().is_empty()
+    {
+        if is_windows {
+            script.push_str(&format!("call {}\n", at_start));
+        } else {
+            // `source` es más robusto que `.`
+            script.push_str(&format!("source \"{}\" || . \"{}\"\n", at_start, at_start));
         }
     }
 
@@ -233,7 +233,7 @@ fn get_default_shell_name() -> Option<&'static str> {
         env::var("SHELL")
             .ok()
             .and_then(|s| {
-                s.split('/').last().map(|name| {
+                s.split('/').next_back().map(|name| {
                     if name == "zsh" {
                         "zsh"
                     } else if name == "fish" {

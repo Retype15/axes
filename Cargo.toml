@@ -2,7 +2,7 @@
 name = "axes"
 version = "0.1.2"
 edition = "2024"
-licence = "MIT"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.99"

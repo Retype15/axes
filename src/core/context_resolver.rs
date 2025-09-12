@@ -128,15 +128,15 @@ fn resolve_last_used_child(
     index: &GlobalIndex,
 ) -> ContextResult<Uuid> {
     let cache_path = parent_entry.path.join(AXES_DIR).join("last_used.cache.bin");
-    if let Ok(Some(cache)) = read_last_used_cache(&cache_path) {
-        if let Some(uuid) = cache.child_uuid {
-            log::debug!(
-                "Último hijo usado '{}' encontrado en caché para '{}'.",
-                uuid,
-                parent_entry.name
-            );
-            return Ok(uuid);
-        }
+    if let Ok(Some(cache)) = read_last_used_cache(&cache_path)
+        && let Some(uuid) = cache.child_uuid
+    {
+        log::debug!(
+            "Último hijo usado '{}' encontrado en caché para '{}'.",
+            uuid,
+            parent_entry.name
+        );
+        return Ok(uuid);
     }
 
     // Fallback: no hay caché o está vacío. Preguntar al usuario.

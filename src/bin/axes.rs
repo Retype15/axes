@@ -8,9 +8,7 @@ use std::{env, fs};
 use uuid::Uuid;
 
 use axes::cli::Cli;
-use axes::core::interpolator::Interpolator;
 use axes::models::Runnable;
-use axes::system::executor;
 use axes::system::shell;
 
 use axes::constants::{AXES_DIR, PROJECT_CONFIG_FILENAME};
@@ -49,7 +47,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             match context_or_action.as_str() {
                 "init" => {
                     // `init` se maneja por separado.
-                    return handle_init(cli.action_or_arg, cli.args);
+                    handle_init(cli.action_or_arg, cli.args)
                 }
                 // Si `tree` se llama sin contexto, asumimos `global tree`.
                 "tree" => {
@@ -60,7 +58,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                         "global".to_string(),
                         &index,
                     )?;
-                    return handle_tree(&global_config);
+                    handle_tree(&global_config)
                 }
                 // Aquí se podrían añadir otros comandos globales como `register` en el futuro.
 
@@ -191,7 +189,7 @@ fn handle_project_action(
         "tree" => handle_tree(&config),
         "start" => handle_start(&config),
         "run" => {
-            let script_name = args.get(0).cloned();
+            let script_name = args.first().cloned();
             let params = args.into_iter().skip(1).collect();
             handle_run(&config, script_name, params)
         }
@@ -230,7 +228,7 @@ fn handle_tree(config: &ResolvedConfig) -> Result<()> {
 fn handle_link(config: &ResolvedConfig, args: Vec<String>) -> Result<()> {
     // 1. Obtener el contexto del nuevo padre.
     let new_parent_context = args
-        .get(0)
+        .first()
         .ok_or_else(|| anyhow!("El comando 'link' requiere el contexto del nuevo padre."))?
         .trim();
 
@@ -424,15 +422,6 @@ fn handle_info(config: &ResolvedConfig) -> Result<()> {
                     ProjectCommand::Simple(_) => {
                         println!("    - {}", cmd_name)
                     }
-                    ProjectCommand::Extended(ext) => {
-                        // Extraer `ext`
-                        if let Some(d) = &ext.desc {
-                            // Acceder a `ext.desc`
-                            println!("    - {} : {}", cmd_name, d);
-                        } else {
-                            println!("    - {}", cmd_name);
-                        }
-                    }
                     ProjectCommand::Platform(pc) => {
                         if let Some(d) = &pc.desc {
                             println!("    - {} : {}", cmd_name, d);
@@ -510,7 +499,7 @@ fn handle_open(config: &ResolvedConfig, args: Vec<String>) -> Result<()> {
 
 fn handle_rename(config: &ResolvedConfig, args: Vec<String>) -> Result<()> {
     let new_name = args
-        .get(0)
+        .first()
         .ok_or_else(|| anyhow!("El comando 'rename' requiere un nuevo nombre para el proyecto."))?
         .trim();
 

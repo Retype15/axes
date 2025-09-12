@@ -41,7 +41,7 @@ impl<'a> Interpolator<'a> {
         // Una forma simple es usar dunce para limpiar la ruta que ya tenemos.
 
         // El `owner_root` también necesita ser limpiado.
-        let owner_root_clean = dunce::simplified(&self.owner_root).to_string_lossy();
+        let owner_root_clean = dunce::simplified(self.owner_root).to_string_lossy();
         let current_path_clean = dunce::simplified(&self.config.project_root).to_string_lossy();
 
         result = result.replace("{root}", &owner_root_clean);

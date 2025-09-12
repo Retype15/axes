@@ -6,7 +6,7 @@ use crate::models::{GlobalIndex, IndexEntry, ProjectRef};
 use std::collections::HashSet;
 use std::error::Error;
 use std::io::ErrorKind;
-use std::{fs, path::PathBuf};
+use std::{fs, path::Path, path::PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -53,7 +53,8 @@ type IndexResult<T> = Result<T, IndexError>;
 /// Carga el índice global y asegura que la entrada para el proyecto 'global' exista.
 pub fn load_and_ensure_global_project() -> IndexResult<GlobalIndex> {
     let mut index = load_global_index_internal()?;
-    if !index.projects.contains_key(&GLOBAL_PROJECT_UUID) {
+    if let std::collections::hash_map::Entry::Vacant(e) = index.projects.entry(GLOBAL_PROJECT_UUID)
+    {
         log::warn!("Proyecto 'global' no encontrado en el índice. Creándolo ahora.");
         let config_dir = paths::get_axes_config_dir()?;
 
@@ -62,7 +63,7 @@ pub fn load_and_ensure_global_project() -> IndexResult<GlobalIndex> {
             path: config_dir.clone(), // Clonar para usarla después
             parent: None,
         };
-        index.projects.insert(GLOBAL_PROJECT_UUID, global_entry);
+        e.insert(global_entry);
 
         // **NUEVO**: Crear los archivos físicos para el proyecto `global`.
         // 1. Crear el `axes.toml` por defecto.
@@ -103,13 +104,12 @@ pub fn add_project_to_index(
 
     // Validar que no haya otro hijo con el mismo nombre y el mismo padre.
     let name_exists = index.projects.values().any(|entry| {
-        let is_sibling = if name == "global" {
+        if name == "global" {
             // 'global' no puede tener hermanos
             false
         } else {
             entry.parent == Some(final_parent_uuid) && entry.name == name
-        };
-        is_sibling
+        }
     });
 
     if name_exists {
@@ -139,7 +139,7 @@ fn load_global_index_internal() -> IndexResult<GlobalIndex> {
     })
 }
 
-pub fn read_project_ref(project_root: &PathBuf) -> IndexResult<ProjectRef> {
+pub fn read_project_ref(project_root: &Path) -> IndexResult<ProjectRef> {
     let ref_path = project_root
         .join(crate::constants::AXES_DIR)
         .join(PROJECT_REF_FILENAME);
@@ -157,7 +157,7 @@ pub fn save_global_index(index: &GlobalIndex) -> IndexResult<()> {
     Ok(())
 }
 
-pub fn write_project_ref(project_root: &PathBuf, project_ref: &ProjectRef) -> IndexResult<()> {
+pub fn write_project_ref(project_root: &Path, project_ref: &ProjectRef) -> IndexResult<()> {
     let axes_dir = project_root.join(crate::constants::AXES_DIR);
     if !axes_dir.exists() {
         fs::create_dir_all(&axes_dir)?;
@@ -178,7 +178,7 @@ pub fn rename_project(
     let target_entry = index
         .projects
         .get(&target_uuid)
-        .ok_or_else(|| IndexError::ProjectNotFoundInIndex { uuid: target_uuid })?;
+        .ok_or(IndexError::ProjectNotFoundInIndex { uuid: target_uuid })?;
 
     let parent_uuid = target_entry.parent;
 
@@ -277,7 +277,7 @@ pub fn link_project(
     }
 
     // 3. Validación de Colisión de Nombres de Hermano
-    let project_to_move_entry = index.projects.get(&project_to_move_uuid).ok_or_else(|| {
+    let project_to_move_entry = index.projects.get(&project_to_move_uuid).ok_or({
         IndexError::ProjectNotFoundInIndex {
             uuid: project_to_move_uuid,
         }
@@ -311,7 +311,7 @@ pub fn link_project(
 
 /// Lee el `project_ref.bin` de un proyecto. Si no existe, lo crea a partir del índice global.
 pub fn get_or_create_project_ref(
-    project_root: &PathBuf,
+    project_root: &Path,
     uuid: Uuid,
     index: &GlobalIndex,
 ) -> IndexResult<ProjectRef> {
@@ -319,30 +319,30 @@ pub fn get_or_create_project_ref(
         Ok(project_ref) => Ok(project_ref), // El archivo existe y es válido.
         Err(e) => {
             // Comprobar si el error es específicamente "Archivo no encontrado".
-            if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
-                if io_err.kind() == ErrorKind::NotFound {
-                    log::warn!(
-                        "El archivo de referencia local (`project_ref.bin`) no existe para el proyecto en '{}'. Se creará uno nuevo.",
-                        project_root.display()
-                    );
+            if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>())
+                && io_err.kind() == ErrorKind::NotFound
+            {
+                log::warn!(
+                    "El archivo de referencia local (`project_ref.bin`) no existe para el proyecto en '{}'. Se creará uno nuevo.",
+                    project_root.display()
+                );
 
-                    // Reconstruir la información desde el índice.
-                    let entry = index
-                        .projects
-                        .get(&uuid)
-                        .ok_or(IndexError::ProjectNotFoundInIndex { uuid })?;
+                // Reconstruir la información desde el índice.
+                let entry = index
+                    .projects
+                    .get(&uuid)
+                    .ok_or(IndexError::ProjectNotFoundInIndex { uuid })?;
 
-                    let new_ref = ProjectRef {
-                        self_uuid: uuid,
-                        parent_uuid: entry.parent,
-                        name: entry.name.clone(),
-                    };
+                let new_ref = ProjectRef {
+                    self_uuid: uuid,
+                    parent_uuid: entry.parent,
+                    name: entry.name.clone(),
+                };
 
-                    // Escribir el archivo recién creado para futuras operaciones.
-                    write_project_ref(project_root, &new_ref)?;
+                // Escribir el archivo recién creado para futuras operaciones.
+                write_project_ref(project_root, &new_ref)?;
 
-                    return Ok(new_ref);
-                }
+                return Ok(new_ref);
             }
             // Si el error es cualquier otra cosa, lo propagamos.
             Err(e)

@@ -95,10 +95,10 @@ pub fn resolve_config_for_uuid(
 
 // --- LÓGICA DE HERENCIA (ASCENDENTE) ---
 
-fn build_inheritance_chain<'a>(
+fn build_inheritance_chain(
     leaf_uuid: Uuid,
-    index: &'a GlobalIndex,
-) -> ResolverResult<Vec<(&'a IndexEntry, ProjectConfig)>> {
+    index: &GlobalIndex,
+) -> ResolverResult<Vec<(&IndexEntry, ProjectConfig)>> {
     let mut chain = Vec::new();
     let mut current_uuid_opt = Some(leaf_uuid);
 
