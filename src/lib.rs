@@ -1,7 +1,7 @@
 // src/lib.rs
 
-pub mod models;
+pub mod cli;
 pub mod constants;
 pub mod core;
-pub mod cli;
+pub mod models;
 pub mod system;

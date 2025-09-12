@@ -29,7 +29,7 @@ pub enum ShellError {
 /// Lanza una sub-shell interactiva para un proyecto.
 pub fn launch_interactive_shell(config: &ResolvedConfig) -> Result<(), ShellError> {
     let shells_config = load_shells_config()?;
-    
+
     // 1. Determinar qué shell usar
     let shell_name = match &config.options.shell {
         Some(shell_from_config) => shell_from_config.clone(), // Usar el valor del config
@@ -37,8 +37,10 @@ pub fn launch_interactive_shell(config: &ResolvedConfig) -> Result<(), ShellErro
             .ok_or(ShellError::NoDefaultShell)?
             .to_string(),
     };
-        
-    let shell_config = shells_config.shells.get(&shell_name)
+
+    let shell_config = shells_config
+        .shells
+        .get(&shell_name)
         .ok_or_else(|| ShellError::ShellNotDefined(shell_name.clone()))?;
 
     // 2. Crear el script de inicialización temporal
@@ -47,21 +49,24 @@ pub fn launch_interactive_shell(config: &ResolvedConfig) -> Result<(), ShellErro
     let temp_script_file = NamedTempFile::with_prefix("axes-init-")?
         .into_temp_path()
         .with_extension(script_extension);
-        
+
     let script_content = build_init_script(config, is_windows_shell);
-    
+
     fs::write(&temp_script_file, script_content)?;
-    
-    log::debug!("Script de inicialización temporal creado en: {}", temp_script_file.display());
+
+    log::debug!(
+        "Script de inicialización temporal creado en: {}",
+        temp_script_file.display()
+    );
 
     // 3. Construir y ejecutar el comando
     let mut cmd = Command::new(&shell_config.path);
     cmd.current_dir(&config.project_root);
-    
+
     // Inyectar variables de sesión de axes
     cmd.env("AXES_PROJECT_ROOT", config.project_root.as_os_str());
     cmd.env("AXES_PROJECT_NAME", &config.qualified_name);
-    
+
     if let Some(args) = &shell_config.interactive_args {
         for arg in args {
             cmd.arg(arg);
@@ -77,7 +82,10 @@ pub fn launch_interactive_shell(config: &ResolvedConfig) -> Result<(), ShellErro
         .status()?;
 
     if !status.success() {
-        log::warn!("La shell interactiva terminó con un código de error: {:?}", status.code());
+        log::warn!(
+            "La shell interactiva terminó con un código de error: {:?}",
+            status.code()
+        );
     }
 
     // 5. La limpieza del archivo temporal es manejada automáticamente por `tempfile`
@@ -119,7 +127,10 @@ fn build_init_script(config: &ResolvedConfig, is_windows: bool) -> String {
     }
 
     // Mensaje de bienvenida
-    let welcome_message = format!("--- Sesión de axes para '{}' iniciada. Escribe 'exit' para salir. ---", config.qualified_name);
+    let welcome_message = format!(
+        "--- Sesión de axes para '{}' iniciada. Escribe 'exit' para salir. ---",
+        config.qualified_name
+    );
     if is_windows {
         script.push_str(&format!("\necho.\necho {}\n", welcome_message));
     } else {
@@ -132,19 +143,22 @@ fn build_init_script(config: &ResolvedConfig, is_windows: bool) -> String {
 /// Carga la configuración de shells desde el disco.
 /// Si el archivo no existe, lo genera con valores por defecto y lo guarda.
 fn load_shells_config() -> Result<ShellsConfig, ShellError> {
-    let config_dir = crate::core::paths::get_axes_config_dir()
-        .map_err(|_| ShellError::ConfigDirNotFound)?;
+    let config_dir =
+        crate::core::paths::get_axes_config_dir().map_err(|_| ShellError::ConfigDirNotFound)?;
     let shells_path = config_dir.join("shells.toml");
-    
+
     if !shells_path.exists() {
         log::warn!("'shells.toml' no encontrado. Generando archivo de configuración por defecto.");
         let default_config = generate_default_shells_config();
         let toml_string = toml::to_string_pretty(&default_config)?;
         fs::write(&shells_path, toml_string)?;
-        println!("Se ha creado un archivo de configuración de shells en: {}", shells_path.display());
+        println!(
+            "Se ha creado un archivo de configuración de shells en: {}",
+            shells_path.display()
+        );
         return Ok(default_config);
     }
-    
+
     let content = fs::read_to_string(shells_path)?;
     Ok(toml::from_str(&content)?)
 }
@@ -155,29 +169,42 @@ fn generate_default_shells_config() -> ShellsConfig {
 
     // Siempre añadir `cmd` en Windows.
     if cfg!(target_os = "windows") {
-        shells.insert("cmd".to_string(), ShellConfig {
-            path: PathBuf::from("cmd.exe"),
-            interactive_args: Some(vec!["/K".to_string()]),
-        });
-        
+        shells.insert(
+            "cmd".to_string(),
+            ShellConfig {
+                path: PathBuf::from("cmd.exe"),
+                interactive_args: Some(vec!["/K".to_string()]),
+            },
+        );
+
         // Intentar detectar PowerShell.
         if is_executable_in_path("powershell.exe") {
-            shells.insert("powershell".to_string(), ShellConfig {
-                path: PathBuf::from("powershell.exe"),
-                interactive_args: Some(vec!["-NoExit".to_string(), "-File".to_string()]),
-            });
+            shells.insert(
+                "powershell".to_string(),
+                ShellConfig {
+                    path: PathBuf::from("powershell.exe"),
+                    interactive_args: Some(vec!["-NoExit".to_string(), "-File".to_string()]),
+                },
+            );
         }
     }
 
     // Intentar detectar `bash` en cualquier sistema.
-    let bash_path_str = if cfg!(target_os = "windows") { "bash.exe" } else { "bash" };
+    let bash_path_str = if cfg!(target_os = "windows") {
+        "bash.exe"
+    } else {
+        "bash"
+    };
     if is_executable_in_path(bash_path_str) {
-        shells.insert("bash".to_string(), ShellConfig {
-            path: PathBuf::from(bash_path_str),
-            interactive_args: Some(vec!["--rcfile".to_string()]),
-        });
+        shells.insert(
+            "bash".to_string(),
+            ShellConfig {
+                path: PathBuf::from(bash_path_str),
+                interactive_args: Some(vec!["--rcfile".to_string()]),
+            },
+        );
     }
-    
+
     // Se podrían añadir más detectores para zsh, fish, etc. aquí.
 
     ShellsConfig { shells }
@@ -203,12 +230,19 @@ fn get_default_shell_name() -> Option<&'static str> {
     } else {
         // En sistemas no-Windows, `bash` es una suposición segura, pero
         // se podría mejorar leyendo la variable de entorno SHELL.
-        env::var("SHELL").ok()
-            .and_then(|s| s.split('/').last().map(|name| {
-                if name == "zsh" { "zsh" }
-                else if name == "fish" { "fish" }
-                else { "bash" } // Fallback
-            }))
+        env::var("SHELL")
+            .ok()
+            .and_then(|s| {
+                s.split('/').last().map(|name| {
+                    if name == "zsh" {
+                        "zsh"
+                    } else if name == "fish" {
+                        "fish"
+                    } else {
+                        "bash"
+                    } // Fallback
+                })
+            })
             .or(Some("bash"))
     }
 }

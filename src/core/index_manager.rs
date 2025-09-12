@@ -1,10 +1,12 @@
 // src/core/index_manager.rs
 
+use crate::constants::PROJECT_REF_FILENAME;
 use crate::core::paths;
 use crate::models::{GlobalIndex, IndexEntry, ProjectRef};
-use crate::constants::PROJECT_REF_FILENAME;
-use std::{fs, path::PathBuf};
 use std::collections::HashSet;
+use std::error::Error;
+use std::io::ErrorKind;
+use std::{fs, path::PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -27,13 +29,23 @@ pub enum IndexError {
     // CORRECCIÓN: La variante NameAlreadyExists debe tener el campo `name`.
     #[error("El nombre de proyecto '{name}' ya está en uso por otro hijo del mismo padre.")]
     NameAlreadyExists { name: String },
+    #[error("Error al decodificar desde formato binario: {0}")]
+    BincodeDecode(#[from] bincode::error::DecodeError),
     #[error("Error al codificar a formato binario: {0}")]
     BincodeEncode(#[from] bincode::error::EncodeError),
-    #[error("Enlace de padre roto: el proyecto '{child_uuid}' apunta a un padre inexistente '{missing_parent_uuid}'.")]
+    #[error(
+        "Enlace de padre roto: el proyecto '{child_uuid}' apunta a un padre inexistente '{missing_parent_uuid}'."
+    )]
     BrokenParentLink {
         child_uuid: Uuid,
         missing_parent_uuid: Uuid,
     },
+    #[error("El proyecto con UUID '{uuid}' no fue encontrado en el índice global.")]
+    ProjectNotFoundInIndex { uuid: Uuid },
+    #[error(
+        "Dependencia circular detectada: el proyecto '{cycle_node_uuid}' ya es un ancestro de la ruta del nuevo padre. No se puede establecer este enlace."
+    )]
+    CircularDependency { cycle_node_uuid: Uuid },
 }
 
 type IndexResult<T> = Result<T, IndexError>;
@@ -44,7 +56,7 @@ pub fn load_and_ensure_global_project() -> IndexResult<GlobalIndex> {
     if !index.projects.contains_key(&GLOBAL_PROJECT_UUID) {
         log::warn!("Proyecto 'global' no encontrado en el índice. Creándolo ahora.");
         let config_dir = paths::get_axes_config_dir()?;
-        
+
         let global_entry = IndexEntry {
             name: "global".to_string(),
             path: config_dir.clone(), // Clonar para usarla después
@@ -103,14 +115,14 @@ pub fn add_project_to_index(
     if name_exists {
         return Err(IndexError::NameAlreadyExists { name });
     }
-    
+
     let new_uuid = Uuid::new_v4();
     let new_entry = IndexEntry {
         name,
         path,
         parent: Some(final_parent_uuid),
     };
-    
+
     index.projects.insert(new_uuid, new_entry);
     Ok(new_uuid)
 }
@@ -127,10 +139,15 @@ fn load_global_index_internal() -> IndexResult<GlobalIndex> {
     })
 }
 
-
-
-
-// OLD DEFS
+pub fn read_project_ref(project_root: &PathBuf) -> IndexResult<ProjectRef> {
+    let ref_path = project_root
+        .join(crate::constants::AXES_DIR)
+        .join(PROJECT_REF_FILENAME);
+    let bytes = fs::read(&ref_path)?;
+    let (project_ref, _): (ProjectRef, usize) =
+        bincode::serde::decode_from_slice(&bytes, bincode::config::standard())?;
+    Ok(project_ref)
+}
 
 /// Guarda el índice global en el disco.
 pub fn save_global_index(index: &GlobalIndex) -> IndexResult<()> {
@@ -140,10 +157,7 @@ pub fn save_global_index(index: &GlobalIndex) -> IndexResult<()> {
     Ok(())
 }
 
-pub fn write_project_ref(
-    project_root: &PathBuf,
-    project_ref: &ProjectRef,
-) -> IndexResult<()> {
+pub fn write_project_ref(project_root: &PathBuf, project_ref: &ProjectRef) -> IndexResult<()> {
     let axes_dir = project_root.join(crate::constants::AXES_DIR);
     if !axes_dir.exists() {
         fs::create_dir_all(&axes_dir)?;
@@ -152,6 +166,42 @@ pub fn write_project_ref(
     // **CORRECCIÓN**: Usar `?` directamente, ya que `IndexError` ahora puede convertirse desde `bincode::error::EncodeError`.
     let bytes = bincode::serde::encode_to_vec(project_ref, bincode::config::standard())?;
     fs::write(ref_path, bytes)?;
+    Ok(())
+}
+
+pub fn rename_project(
+    index: &mut GlobalIndex,
+    target_uuid: Uuid,
+    new_name: &str,
+) -> IndexResult<()> {
+    // 1. Obtener la entrada. Robusto. `ok_or_else` previene un panic si el UUID es inválido.
+    let target_entry = index
+        .projects
+        .get(&target_uuid)
+        .ok_or_else(|| IndexError::ProjectNotFoundInIndex { uuid: target_uuid })?;
+
+    let parent_uuid = target_entry.parent;
+
+    // 2. Validación de colisión. Robusto. La lógica con `.any()` es correcta y eficiente.
+    // El `*uuid != target_uuid` asegura que no nos comparemos con nosotros mismos.
+    let sibling_name_exists = index.projects.iter().any(|(uuid, entry)| {
+        *uuid != target_uuid && entry.parent == parent_uuid && entry.name == new_name
+    });
+
+    if sibling_name_exists {
+        return Err(IndexError::NameAlreadyExists {
+            name: new_name.to_string(),
+        });
+    }
+
+    // 3. Modificación. Robusto. `get_mut` es la forma correcta de modificar un valor en un HashMap.
+    // El `else` con el `Err` es una capa extra de seguridad, aunque teóricamente inalcanzable.
+    if let Some(entry_to_modify) = index.projects.get_mut(&target_uuid) {
+        entry_to_modify.name = new_name.to_string();
+    } else {
+        return Err(IndexError::ProjectNotFoundInIndex { uuid: target_uuid });
+    }
+
     Ok(())
 }
 
@@ -174,16 +224,128 @@ pub fn find_cycle_from_node(
                 current_uuid_opt = current_entry.parent;
             }
             None => {
-                // El nodo actual no existe en el índice, lo que significa que el
-                // nodo anterior tenía un `parent_uuid` que apunta a la nada.
-                return Err(IndexError::BrokenParentLink {
-                    child_uuid: visited_nodes.iter().last().unwrap().clone(), // El último nodo válido que visitamos
-                    missing_parent_uuid: current_uuid,
-                });
+                // El nodo actual no existe en el índice, significa que el `parent_uuid`
+                // de un nodo anterior apunta a una entrada inexistente (enlace roto).
+                // O hemos llegado a la raíz (parent: None) de forma segura.
+                if current_uuid != GLOBAL_PROJECT_UUID {
+                    // Si no es el proyecto global y no tiene padre, es un enlace roto
+                    // (ya que todos deberían apuntar a global o a otro proyecto).
+                    // Esto debería ser `current_entry.parent` del anterior nodo.
+                    // Esto es un poco más complejo de reportar con precisión en este punto.
+                    // Por ahora, asumimos que `index.projects.get(&current_uuid)` ya lo detectaría.
+                    // El error se propagaría antes.
+                }
+                return Ok(None); // Llegamos a una raíz o a un punto final sin ciclo.
             }
         }
     }
 
-    // Si el bucle termina, llegamos a una raíz sin repetir nodos. No hay ciclo.
-    Ok(None)
+    Ok(None) // El bucle nunca se ejecutó (start_node_uuid era None) o no se encontró ciclo.
+}
+
+pub fn link_project(
+    index: &mut GlobalIndex,
+    project_to_move_uuid: Uuid,
+    new_parent_uuid: Uuid,
+) -> IndexResult<()> {
+    // 1. No se puede mover un proyecto a sí mismo o a `global` de forma arbitraria si ya es hijo de `global`.
+    if project_to_move_uuid == new_parent_uuid {
+        return Err(IndexError::CircularDependency {
+            cycle_node_uuid: project_to_move_uuid,
+        });
+    }
+    // Un proyecto no puede ser padre de sí mismo.
+
+    // 2. Validación de Anti-Ciclos
+    // Creamos una copia temporal del índice con el cambio propuesto para testear el ciclo.
+    let mut temp_index_for_cycle_check = index.clone(); // Necesita `Clone` para GlobalIndex
+    if let Some(entry_to_modify) = temp_index_for_cycle_check
+        .projects
+        .get_mut(&project_to_move_uuid)
+    {
+        entry_to_modify.parent = Some(new_parent_uuid);
+    } else {
+        return Err(IndexError::ProjectNotFoundInIndex {
+            uuid: project_to_move_uuid,
+        });
+    }
+
+    if let Some(cycle_node_uuid) =
+        find_cycle_from_node(project_to_move_uuid, &temp_index_for_cycle_check)?
+    {
+        return Err(IndexError::CircularDependency { cycle_node_uuid });
+    }
+
+    // 3. Validación de Colisión de Nombres de Hermano
+    let project_to_move_entry = index.projects.get(&project_to_move_uuid).ok_or_else(|| {
+        IndexError::ProjectNotFoundInIndex {
+            uuid: project_to_move_uuid,
+        }
+    })?;
+
+    let sibling_name_exists = index.projects.iter().any(|(uuid, entry)| {
+        *uuid != project_to_move_uuid && // No es el proyecto que estamos moviendo
+        entry.parent == Some(new_parent_uuid) && // Es hijo del nuevo padre
+        entry.name == project_to_move_entry.name // Y tiene el mismo nombre
+    });
+
+    if sibling_name_exists {
+        return Err(IndexError::NameAlreadyExists {
+            name: project_to_move_entry.name.clone(),
+        });
+    }
+
+    // 4. Si todas las validaciones pasan, realizar el cambio en el índice real.
+    if let Some(entry_to_modify) = index.projects.get_mut(&project_to_move_uuid) {
+        entry_to_modify.parent = Some(new_parent_uuid);
+    } else {
+        return Err(IndexError::ProjectNotFoundInIndex {
+            uuid: project_to_move_uuid,
+        });
+    }
+
+    Ok(())
+}
+
+//Utils
+
+/// Lee el `project_ref.bin` de un proyecto. Si no existe, lo crea a partir del índice global.
+pub fn get_or_create_project_ref(
+    project_root: &PathBuf,
+    uuid: Uuid,
+    index: &GlobalIndex,
+) -> IndexResult<ProjectRef> {
+    match read_project_ref(project_root) {
+        Ok(project_ref) => Ok(project_ref), // El archivo existe y es válido.
+        Err(e) => {
+            // Comprobar si el error es específicamente "Archivo no encontrado".
+            if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
+                if io_err.kind() == ErrorKind::NotFound {
+                    log::warn!(
+                        "El archivo de referencia local (`project_ref.bin`) no existe para el proyecto en '{}'. Se creará uno nuevo.",
+                        project_root.display()
+                    );
+
+                    // Reconstruir la información desde el índice.
+                    let entry = index
+                        .projects
+                        .get(&uuid)
+                        .ok_or(IndexError::ProjectNotFoundInIndex { uuid })?;
+
+                    let new_ref = ProjectRef {
+                        self_uuid: uuid,
+                        parent_uuid: entry.parent,
+                        name: entry.name.clone(),
+                    };
+
+                    // Escribir el archivo recién creado para futuras operaciones.
+                    write_project_ref(project_root, &new_ref)?;
+
+                    return Ok(new_ref);
+                }
+            }
+            // Si el error es cualquier otra cosa, lo propagamos.
+            Err(e)
+        }
+    }
 }

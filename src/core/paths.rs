@@ -20,7 +20,9 @@ pub enum PathError {
 /// Devuelve la ruta al directorio de configuración de Axes.
 /// Lo crea si no existe.
 pub fn get_axes_config_dir() -> Result<PathBuf, PathError> {
-    let config_path = dirs::config_dir().ok_or(PathError::ConfigDirNotFound)?.join("axes");
+    let config_path = dirs::config_dir()
+        .ok_or(PathError::ConfigDirNotFound)?
+        .join("axes");
 
     if !config_path.exists() {
         fs::create_dir_all(&config_path).map_err(|e| PathError::ConfigDirCreation {

@@ -2,6 +2,7 @@
 
 use dunce;
 use std::collections::HashMap;
+use std::io::ErrorKind; // Necesario para la detección de errores
 use std::path::PathBuf;
 use std::process::{Command as StdCommand, Stdio};
 use thiserror::Error;
@@ -18,78 +19,97 @@ pub enum ExecutionError {
     NonZeroExitStatus(String),
 }
 
-/// Ejecuta un comando de sistema en un directorio de trabajo específico,
-/// con un conjunto de variables de entorno adicionales.
+/// Ejecuta un comando de sistema de forma robusta y predecible.
 pub fn execute_command(
     command_line: &str,
     cwd: &PathBuf,
     env_vars: &HashMap<String, String>,
 ) -> Result<(), ExecutionError> {
-    if command_line.trim().is_empty() {
+    let trimmed_command = command_line.trim();
+    if trimmed_command.is_empty() {
         return Err(ExecutionError::EmptyCommand);
     }
 
-    let clean_cwd = dunce::simplified(cwd);
+    let (final_command_line, ignore_errors) = if trimmed_command.starts_with('-') {
+        (trimmed_command.strip_prefix('-').unwrap().trim(), true)
+    } else {
+        (trimmed_command, false)
+    };
 
-    log::info!("Ejecutando comando: '{}' en {:?}", command_line, clean_cwd);
+    log::info!(
+        "Ejecutando comando: '{}' en {:?}",
+        final_command_line,
+        dunce::simplified(cwd).display()
+    );
 
-    // 1. Usar `shlex` para parsear la línea de comando como lo haría un shell.
-    // Esto maneja correctamente las comillas y los espacios.
-    let parts = shlex::split(command_line)
-        .ok_or_else(|| ExecutionError::CommandParse(command_line.to_string()))?;
-    
+    let parts = shlex::split(final_command_line)
+        .ok_or_else(|| ExecutionError::CommandParse(final_command_line.to_string()))?;
+
     if parts.is_empty() {
         return Err(ExecutionError::EmptyCommand);
     }
 
-    // 2. Separar el programa de los argumentos.
     let program = &parts[0];
     let args = &parts[1..];
+    let clean_cwd = dunce::simplified(cwd);
 
-    // 3. Manejar el caso especial de los comandos internos de `cmd.exe` en Windows.
-    let mut command;
-    if cfg!(target_os = "windows") && is_windows_shell_builtin(program) {
-        // Para `start`, `cd`, `echo`, etc., necesitamos envolverlos en `cmd /C`.
-        command = StdCommand::new("cmd");
-        command.arg("/C");
-        // Pasamos el programa y sus argumentos como tokens separados,
-        // lo que permite a `cmd` reconstruirlos correctamente.
-        command.arg(program);
-        command.args(args);
-    } else {
-        // Para todos los demás ejecutables (`code.exe`, `explorer.exe`, `git`, `bash`, etc.),
-        // los llamamos directamente.
-        command = StdCommand::new(program);
-        command.args(args);
-    }
+    // --- El Enfoque Unificado ---
 
-    //println!("{}", clean_cwd.to_string_lossy());
-    
-    // 4. Configurar el resto y ejecutar.
+    // 1. Intentar la ejecución directa
+    let mut command = StdCommand::new(program);
     command
+        .args(args)
         .current_dir(clean_cwd)
         .envs(env_vars)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    let status = command
-        .status()
-        .map_err(|e| ExecutionError::CommandFailed(command_line.to_string(), e))?;
+    match command.status() {
+        Ok(status) => {
+            // El programa se encontró y se ejecutó.
+            if !status.success() {
+                if !ignore_errors {
+                    return Err(ExecutionError::NonZeroExitStatus(command_line.to_string()));
+                } else {
+                    log::warn!(
+                        "El comando finalizó con un código de error no nulo, pero fue ignorado como se solicitó."
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            // El programa no se pudo iniciar.
+            if e.kind() == ErrorKind::NotFound && cfg!(target_os = "windows") {
+                // 2. FALLBACK: Si no se encontró y estamos en Windows, podría ser un `builtin`.
+                log::debug!(
+                    "El comando '{}' no se encontró. Reintentando con `cmd /C`.",
+                    program
+                );
 
-    if !status.success() {
-        return Err(ExecutionError::NonZeroExitStatus(
-            command_line.to_string(),
-        ));
+                let mut fallback_command = StdCommand::new("cmd");
+                fallback_command
+                    .arg("/C")
+                    .arg(command_line) // Pasamos la línea completa para que `cmd` la parsee.
+                    .current_dir(dunce::simplified(cwd))
+                    .envs(env_vars)
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit());
+
+                let fallback_status = fallback_command
+                    .status()
+                    .map_err(|e| ExecutionError::CommandFailed(command_line.to_string(), e))?;
+
+                if !fallback_status.success() {
+                    return Err(ExecutionError::NonZeroExitStatus(command_line.to_string()));
+                }
+            } else {
+                // Si el error es otro (ej. permisos) o no estamos en Windows, es un error real.
+                return Err(ExecutionError::CommandFailed(command_line.to_string(), e));
+            }
+        }
     }
 
     Ok(())
 }
 
-/// Comprueba si un comando es un "builtin" de cmd.exe.
-/// Esta es una lista simplificada pero cubre los casos más comunes.
-fn is_windows_shell_builtin(program: &str) -> bool {
-    matches!(
-        program.to_lowercase().as_str(),
-        "start" | "cd" | "dir" | "echo" | "set" | "call" | "pause" | "cls" | "copy" | "del" | "move" | "rename" | "mkdir"
-    )
-}
+// La función `is_windows_shell_builtin` ya no es necesaria y ha sido eliminada.

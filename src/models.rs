@@ -16,7 +16,6 @@ pub enum Runnable {
     Single(String),
 }
 
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ExtendedCommand {
     pub run: Runnable,
@@ -28,11 +27,10 @@ pub struct PlatformCommand {
     #[serde(default)]
     pub default: Option<Runnable>,
     pub windows: Option<Runnable>,
-    pub linux: Option<Runnable>,  
-    pub macos: Option<Runnable>,  
+    pub linux: Option<Runnable>,
+    pub macos: Option<Runnable>,
     pub desc: Option<String>,
 }
-
 
 /// Representa un comando en `axes.toml`. Usa `untagged` para una sintaxis flexible.
 /// Es solo para deserializar desde TOML, no para serializar a bincode.
@@ -51,7 +49,7 @@ pub struct OptionsConfig {
     pub at_start: Option<String>,
     pub at_exit: Option<String>,
     pub shell: Option<String>,
-    
+
     // La sub-tabla `open_with`
     #[serde(default)]
     pub open_with: HashMap<String, String>,
@@ -84,7 +82,6 @@ impl ProjectConfig {
         );
         let mut open_with_defaults = HashMap::new();
         if cfg!(target_os = "windows") {
-            
             open_with_defaults.insert("default".to_string(), "explorer .".to_string());
             open_with_defaults.insert("explorer".to_string(), "explorer .".to_string());
             open_with_defaults.insert("vsc".to_string(), "code .".to_string());
@@ -92,7 +89,8 @@ impl ProjectConfig {
             open_with_defaults.insert("default".to_string(), "open .".to_string());
             open_with_defaults.insert("finder".to_string(), "open .".to_string());
             open_with_defaults.insert("vsc".to_string(), "code .".to_string());
-        } else { // Linux y otros
+        } else {
+            // Linux y otros
             open_with_defaults.insert("default".to_string(), "xdg-open .".to_string());
             open_with_defaults.insert("nautilus".to_string(), "nautilus .".to_string());
             open_with_defaults.insert("vsc".to_string(), "code .".to_string());
@@ -112,7 +110,6 @@ impl ProjectConfig {
     }
 }
 
-
 // --- MODELOS DE ÍNDICE GLOBAL ---
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
@@ -122,13 +119,12 @@ pub struct IndexEntry {
     pub parent: Option<Uuid>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct GlobalIndex {
     #[serde(default)]
     pub projects: HashMap<Uuid, IndexEntry>,
     pub last_used: Option<Uuid>,
 }
-
 
 // --- MODELOS DE CACHÉ LOCAL ---
 
@@ -149,7 +145,6 @@ pub struct ProjectRef {
     pub parent_uuid: Option<Uuid>,
     pub name: String,
 }
-
 
 // --- MODELOS EN MEMORIA (Nuestra representación de trabajo interna) ---
 
@@ -217,7 +212,6 @@ pub(crate) struct SerializableConfigCache {
     pub dependencies: HashMap<String, SerializableSystemTime>,
 }
 
-
 // --- LÓGICA DE CONVERSIÓN ENTRE MODELOS DE TRABAJO Y MODELOS SERIALIZABLES ---
 
 // Command <-> SerializableCommand
@@ -252,7 +246,11 @@ impl From<&ResolvedConfig> for SerializableResolvedConfig {
             project_root: value.project_root.to_string_lossy().into_owned(),
             version: value.version.clone(),
             description: value.description.clone(),
-            commands: value.commands.iter().map(|(k, v)| (k.clone(), v.into())).collect(),
+            commands: value
+                .commands
+                .iter()
+                .map(|(k, v)| (k.clone(), v.into()))
+                .collect(),
             options: value.options.clone(),
             vars: value.vars.clone(),
             env: value.env.clone(),
@@ -268,7 +266,11 @@ impl From<SerializableResolvedConfig> for ResolvedConfig {
             project_root: PathBuf::from(value.project_root),
             version: value.version,
             description: value.description,
-            commands: value.commands.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            commands: value
+                .commands
+                .into_iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect(),
             options: value.options,
             vars: value.vars,
             env: value.env,

@@ -1,19 +1,19 @@
 // src/core/interpolator.rs
 
 use crate::models::ResolvedConfig;
-use std::path::PathBuf;
 use dunce;
+use std::path::PathBuf;
 
 pub struct Interpolator<'a> {
     config: &'a ResolvedConfig,
     params: &'a [String],
-    owner_root: &'a PathBuf, 
+    owner_root: &'a PathBuf,
 }
 
 impl<'a> Interpolator<'a> {
     pub fn new(config: &'a ResolvedConfig, params: &'a [String]) -> Self {
-        Self { 
-            config, 
+        Self {
+            config,
             params,
             owner_root: &config.project_root,
         }
@@ -33,13 +33,13 @@ impl<'a> Interpolator<'a> {
 
         result = result.replace("{uuid}", &self.config.uuid.to_string());
         result = result.replace("{name}", &self.config.qualified_name);
-        
+
         // **NUEVA LÓGICA DE FORMATEO DE RUTA**
         // `dunce::canonicalize` hace lo mismo que `std::fs::canonicalize`
         // pero en Windows se asegura de devolver una ruta limpia sin `\\?\`.
         // Sin embargo, como ya tenemos la ruta, solo necesitamos formatearla.
         // Una forma simple es usar dunce para limpiar la ruta que ya tenemos.
-        
+
         // El `owner_root` también necesita ser limpiado.
         let owner_root_clean = dunce::simplified(&self.owner_root).to_string_lossy();
         let current_path_clean = dunce::simplified(&self.config.project_root).to_string_lossy();

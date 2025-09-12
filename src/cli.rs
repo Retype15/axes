@@ -7,7 +7,7 @@ use clap::Parser;
 #[command(author, version, about, long_about = None)]
 #[command(disable_help_subcommand = true)]
 pub struct Cli {
-    /// El contexto del proyecto (ej: 'monorepo.api', '.', '*') o una acción global ('list').
+    /// El contexto del proyecto (ej: 'monorepo.api', '.', '*') o una acción global ('init' o 'tree').
     /// Si no se proporciona, se lanzará la TUI.
     pub context_or_action: Option<String>,
 
