@@ -6,8 +6,10 @@ use std::{env, fs, path::Path};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::constants::{AXES_DIR, PROJECT_CONFIG_FILENAME};
+use crate::constants::{AXES_DIR};
 use crate::core::index_manager::{self, GLOBAL_PROJECT_UUID};
+
+use crate::constants::LAST_USED_CACHE_FILENAME;
 
 use bincode::error::DecodeError;
 
@@ -107,6 +109,11 @@ pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uui
 fn resolve_first_part(part: &str, index: &GlobalIndex) -> ContextResult<(Uuid, Option<Uuid>)> {
     let uuid = match part {
         "**" => index.last_used.ok_or(ContextError::NoLastUsedProject)?,
+        "*" => {
+            let global_entry = index.projects.get(&GLOBAL_PROJECT_UUID)
+                .expect("El proyecto global debe existir siempre.");
+            resolve_last_used_child(GLOBAL_PROJECT_UUID, global_entry, index)?
+        },
         "." => find_project_from_path(&env::current_dir()?, true, index)?,
         "_" => find_project_from_path(&env::current_dir()?, false, index)?,
         // **NUEVA LÓGICA**: "global" es un nombre explícito, el resto son hijos implícitos de `global`.
@@ -127,7 +134,7 @@ fn resolve_last_used_child(
     parent_entry: &IndexEntry,
     index: &GlobalIndex,
 ) -> ContextResult<Uuid> {
-    let cache_path = parent_entry.path.join(AXES_DIR).join("last_used.cache.bin");
+    let cache_path = parent_entry.path.join(AXES_DIR).join(&LAST_USED_CACHE_FILENAME);
     if let Ok(Some(cache)) = read_last_used_cache(&cache_path)
         && let Some(uuid) = cache.child_uuid
     {
@@ -173,29 +180,32 @@ fn resolve_last_used_child(
 }
 
 /// Encuentra el UUID de un proyecto buscando desde una ruta del sistema de archivos.
-fn find_project_from_path(
-    path: &Path,
-    search_up: bool,
-    index: &GlobalIndex,
-) -> ContextResult<Uuid> {
-    let mut current_path_opt = Some(path);
-    while let Some(p) = current_path_opt {
-        let config_path = p.join(AXES_DIR).join(PROJECT_CONFIG_FILENAME);
-        if config_path.is_file() {
-            let canonical_p = p.canonicalize()?;
-            if let Some((uuid, _)) = index.projects.iter().find(|(_, e)| e.path == canonical_p) {
-                return Ok(*uuid);
-            }
-        }
-        if !search_up {
-            break;
-        }
-        current_path_opt = p.parent();
-    }
+fn find_project_from_path(path: &Path, search_up: bool, index: &GlobalIndex) -> ContextResult<Uuid> {
+    let current_path = dunce::canonicalize(path)?;
+
     if search_up {
-        Err(ContextError::ProjectNotFoundFromPath)
+        // Modo '.' (búsqueda ascendente)
+        let mut candidates: Vec<(Uuid, &IndexEntry)> = index.projects.iter()
+            .filter(|(_, entry)| current_path.starts_with(&entry.path))
+            .map(|(uuid, entry)| (*uuid, entry))
+            .collect();
+        
+        if candidates.is_empty() {
+            return Err(ContextError::ProjectNotFoundFromPath);
+        }
+
+        // Ordenar por longitud de la ruta, de más larga a más corta.
+        candidates.sort_by_key(|(_, entry)| std::cmp::Reverse(entry.path.as_os_str().len()));
+        
+        // El primer candidato es el más específico (el "ancestro" más cercano).
+        Ok(candidates[0].0)
+
     } else {
-        Err(ContextError::ProjectNotFoundInCwd)
+        // Modo '_' (búsqueda estricta en el directorio actual)
+        index.projects.iter()
+            .find(|(_, entry)| entry.path == current_path)
+            .map(|(uuid, _)| *uuid)
+            .ok_or(ContextError::ProjectNotFoundInCwd)
     }
 }
 
@@ -262,7 +272,7 @@ fn update_last_used_caches(final_uuid: Uuid, index: &GlobalIndex) -> ContextResu
     global_index.last_used = Some(final_uuid);
     index_manager::save_global_index(&global_index)?;
 
-    // 2. **NUEVO**: Actualizar los cachés de hijos (`*`) subiendo por el árbol.
+    // 2. Actualizar los cachés de hijos (`*`) subiendo por el árbol.
     let mut current_entry = index.projects.get(&final_uuid).unwrap();
     let mut child_uuid_to_save = final_uuid;
 
@@ -277,7 +287,7 @@ fn update_last_used_caches(final_uuid: Uuid, index: &GlobalIndex) -> ContextResu
             let cache = LastUsedCache {
                 child_uuid: Some(child_uuid_to_save),
             };
-            let cache_path = parent_entry.path.join(AXES_DIR).join("last_used.cache.bin");
+            let cache_path = parent_entry.path.join(AXES_DIR).join(&LAST_USED_CACHE_FILENAME);
 
             // Llamar a la función que antes no se usaba
             write_last_used_cache(&cache_path, &cache)?;

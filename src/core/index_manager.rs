@@ -10,23 +10,18 @@ use std::{fs, path::Path, path::PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::constants::GLOBAL_INDEX_FILENAME;
+
 pub const GLOBAL_PROJECT_UUID: Uuid = Uuid::nil();
 
 #[derive(Error, Debug)]
 pub enum IndexError {
     #[error("Error de Ficheros: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Error al parsear TOML en '{path}': {source}")]
-    TomlParse {
-        path: String,
-        #[source]
-        source: toml::de::Error,
-    },
-    #[error("Error al serializar a formato TOML: {0}")]
-    TomlSerialize(#[from] toml::ser::Error),
     #[error("Error de rutas: {0}")]
     Path(#[from] crate::core::paths::PathError),
-    // CORRECCIÓN: La variante NameAlreadyExists debe tener el campo `name`.
+    #[error("Error al serializar a formato TOML: {0}")]
+    TomlSerialize(#[from] toml::ser::Error),
     #[error("El nombre de proyecto '{name}' ya está en uso por otro hijo del mismo padre.")]
     NameAlreadyExists { name: String },
     #[error("Error al decodificar desde formato binario: {0}")]
@@ -98,14 +93,11 @@ pub fn add_project_to_index(
     name: String,
     path: PathBuf,
     parent_uuid: Option<Uuid>,
-) -> IndexResult<Uuid> {
-    // Si no se especifica un padre, se asume que es hijo de `global`.
+) -> IndexResult<(Uuid, IndexEntry)> {
     let final_parent_uuid = parent_uuid.unwrap_or(GLOBAL_PROJECT_UUID);
 
-    // Validar que no haya otro hijo con el mismo nombre y el mismo padre.
     let name_exists = index.projects.values().any(|entry| {
         if name == "global" {
-            // 'global' no puede tener hermanos
             false
         } else {
             entry.parent == Some(final_parent_uuid) && entry.name == name
@@ -123,20 +115,29 @@ pub fn add_project_to_index(
         parent: Some(final_parent_uuid),
     };
 
-    index.projects.insert(new_uuid, new_entry);
-    Ok(new_uuid)
+    index.projects.insert(new_uuid, new_entry.clone());
+    Ok((new_uuid, new_entry))
 }
 
 fn load_global_index_internal() -> IndexResult<GlobalIndex> {
-    let path = paths::get_global_index_path()?;
+    let path = paths::get_axes_config_dir()?.join(GLOBAL_INDEX_FILENAME);
     if !path.exists() {
         return Ok(GlobalIndex::default());
     }
-    let content = fs::read_to_string(&path)?;
-    toml::from_str(&content).map_err(|e| IndexError::TomlParse {
-        path: path.display().to_string(),
-        source: e,
-    })
+    let bytes = fs::read(&path)?;
+    // Usar bincode para deserializar desde los bytes
+    let (index, _): (GlobalIndex, usize) =
+        bincode::serde::decode_from_slice(&bytes, bincode::config::standard())?;
+    Ok(index)
+}
+
+/// Guarda el índice global en el disco.
+pub fn save_global_index(index: &GlobalIndex) -> IndexResult<()> {
+    let path = paths::get_axes_config_dir()?.join(GLOBAL_INDEX_FILENAME);
+    // Usar bincode para serializar a bytes
+    let bytes = bincode::serde::encode_to_vec(index, bincode::config::standard())?;
+    fs::write(path, bytes)?;
+    Ok(())
 }
 
 pub fn read_project_ref(project_root: &Path) -> IndexResult<ProjectRef> {
@@ -147,14 +148,6 @@ pub fn read_project_ref(project_root: &Path) -> IndexResult<ProjectRef> {
     let (project_ref, _): (ProjectRef, usize) =
         bincode::serde::decode_from_slice(&bytes, bincode::config::standard())?;
     Ok(project_ref)
-}
-
-/// Guarda el índice global en el disco.
-pub fn save_global_index(index: &GlobalIndex) -> IndexResult<()> {
-    let path = paths::get_global_index_path()?;
-    let toml_string = toml::to_string_pretty(index)?;
-    fs::write(path, toml_string)?;
-    Ok(())
 }
 
 pub fn write_project_ref(project_root: &Path, project_ref: &ProjectRef) -> IndexResult<()> {
@@ -348,4 +341,107 @@ pub fn get_or_create_project_ref(
             Err(e)
         }
     }
+}
+
+/// Elimina un proyecto del índice. Re-parenta a sus hijos directos a 'global'.
+pub fn delete_project_entry(index: &mut GlobalIndex, target_uuid: Uuid) -> Option<IndexEntry> {
+    if target_uuid == GLOBAL_PROJECT_UUID {
+        log::error!("No se puede eliminar el proyecto 'global'.");
+        return None; // No se puede eliminar el proyecto global
+    }
+
+    // Encontrar todos los hijos directos del nodo a eliminar
+    let children_to_reparent: Vec<Uuid> = index
+        .projects
+        .iter()
+        .filter(|(_, entry)| entry.parent == Some(target_uuid))
+        .map(|(uuid, _)| *uuid)
+        .collect();
+
+    // Re-parentarlos a `global`
+    for child_uuid in children_to_reparent {
+        if let Some(child_entry) = index.projects.get_mut(&child_uuid) {
+            child_entry.parent = Some(GLOBAL_PROJECT_UUID);
+        }
+    }
+
+    // Finalmente, eliminar la entrada del proyecto
+    index.projects.remove(&target_uuid)
+}
+
+/// Recolecta todos los UUIDs descendientes de un nodo inicial.
+pub fn get_all_descendants(index: &GlobalIndex, start_uuid: Uuid) -> Vec<Uuid> {
+    let mut descendants = Vec::new();
+    let mut to_visit = vec![start_uuid];
+
+    while let Some(current_uuid) = to_visit.pop() {
+        let children: Vec<Uuid> = index
+            .projects
+            .iter()
+            .filter(|(_, entry)| entry.parent == Some(current_uuid))
+            .map(|(uuid, _)| *uuid)
+            .collect();
+
+        descendants.extend(&children);
+        to_visit.extend(children);
+    }
+    descendants
+}
+
+pub fn remove_from_index(
+    index: &mut GlobalIndex,
+    uuids_to_remove: &[Uuid],
+    should_reparent_orphans: bool,
+) -> usize {
+    let mut removed_count = 0;
+    let remove_set: std::collections::HashSet<Uuid> = uuids_to_remove.iter().cloned().collect();
+
+    if should_reparent_orphans {
+        let children_to_reparent: Vec<Uuid> = index.projects.iter()
+            .filter(|(_, entry)| 
+            entry.parent.is_some_and(|p_uuid| remove_set.contains(&p_uuid))
+        )
+        .map(|(uuid, _)| *uuid)
+        .collect();
+
+        for child_uuid in children_to_reparent {
+            if let Some(child_entry) = index.projects.get_mut(&child_uuid) {
+                child_entry.parent = Some(GLOBAL_PROJECT_UUID);
+            }
+        }
+    }
+
+    index.projects.retain(|uuid, _| {
+        if remove_set.contains(uuid) {
+            removed_count += 1;
+            false
+        } else {
+            true
+        }
+    });
+
+    removed_count
+}
+
+/// Reconstruye el nombre cualificado de un proyecto subiendo por el árbol de padres.
+pub fn build_qualified_name(start_uuid: Uuid, index: &GlobalIndex) -> Option<String> {
+    let mut parts = Vec::new();
+    let mut current_uuid = Some(start_uuid);
+
+    while let Some(uuid) = current_uuid {
+        if let Some(entry) = index.projects.get(&uuid) {
+            parts.push(entry.name.clone());
+            current_uuid = entry.parent;
+            // Si el padre es `None`, hemos llegado a la raíz del árbol de `axes`.
+            if entry.parent.is_none() { 
+                break;
+            }
+        } else {
+            // Enlace roto, no se puede construir el nombre completo.
+            return None;
+        }
+    }
+
+    parts.reverse();
+    Some(parts.join("/"))
 }

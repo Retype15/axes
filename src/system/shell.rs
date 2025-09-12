@@ -66,6 +66,7 @@ pub fn launch_interactive_shell(config: &ResolvedConfig) -> Result<(), ShellErro
     // Inyectar variables de sesión de axes
     cmd.env("AXES_PROJECT_ROOT", config.project_root.as_os_str());
     cmd.env("AXES_PROJECT_NAME", &config.qualified_name);
+    cmd.env("AXES_PROJECT_UUID", config.uuid.to_string());
 
     if let Some(args) = &shell_config.interactive_args {
         for arg in args {

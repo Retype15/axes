@@ -13,7 +13,9 @@ pub const CONFIG_CACHE_FILENAME: &str = "config.cache.bin";
 pub const CHILDREN_CACHE_FILENAME: &str = "children.cache.bin";
 
 /// El nombre del archivo del índice global (en ~/.config/axes/).
-pub const GLOBAL_INDEX_FILENAME: &str = "index.toml";
+pub const GLOBAL_INDEX_FILENAME: &str = "index.bin";
 
 /// El nombre del archivo que contiene la identidad y referencias de un proyecto.
 pub const PROJECT_REF_FILENAME: &str = "project_ref.bin";
+
+pub const LAST_USED_CACHE_FILENAME: &str = "last_used.cache.bin";

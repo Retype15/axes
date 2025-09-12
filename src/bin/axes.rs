@@ -4,8 +4,11 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use clap::Parser;
-use std::{env, fs};
+use std::{env, fs, path::PathBuf};
 use uuid::Uuid;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use axes::cli::Cli;
 use axes::models::Runnable;
@@ -13,12 +16,28 @@ use axes::system::shell;
 
 use axes::constants::{AXES_DIR, PROJECT_CONFIG_FILENAME};
 use axes::core::graph_display;
-use axes::core::{config_resolver, context_resolver, index_manager};
+use axes::core::{
+    config_resolver, context_resolver, index_manager, onboarding_manager,
+    onboarding_manager::OnboardingOptions,
+};
 use axes::models::{Command as ProjectCommand, ProjectConfig, ProjectRef, ResolvedConfig};
+
+use dialoguer::{Confirm, theme::ColorfulTheme};
 
 /// El punto de entrada principal de la aplicación.
 fn main() {
-    // Inicializar el logger. Para ver los logs, ejecuta con `RUST_LOG=debug axes ...`
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    // Esto se ejecuta en un hilo separado cuando se presiona Ctrl+C.
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+        // Podríamos imprimir un mensaje, pero a veces es mejor ser silencioso.
+        println!("\nInterrupción recibida, terminando...");
+    }).expect("Error al establecer el manejador de Ctrl-C");
+
+
+    // Inicializar el logger.
     env_logger::init();
 
     // Parsear los argumentos de la línea de comandos.
@@ -26,10 +45,15 @@ fn main() {
 
     // Ejecutar la lógica principal y manejar cualquier error.
     if let Err(e) = run_cli(cli) {
-        // Usamos `eprintln` para escribir en stderr, que es la práctica estándar para errores.
-        // El formato `{:?}` con `anyhow` proporciona un stack trace útil.
-        eprintln!("\nError: {:?}", e);
-        std::process::exit(1);
+        // No mostrar el error si fue por una interrupción del usuario.
+        if running.load(Ordering::SeqCst) {
+            eprintln!("\nError: {:?}", e);
+            std::process::exit(1);
+        } else {
+            // El error fue probablemente causado por la interrupción, así que salimos silenciosamente.
+            println!("\nOperación cancelada.");
+            std::process::exit(130); // Código de salida estándar para Ctrl+C
+        }
     }
 }
 
@@ -37,48 +61,172 @@ fn main() {
 fn run_cli(cli: Cli) -> Result<()> {
     log::debug!("CLI args parsed: {:?}", cli);
 
-    match cli.context_or_action {
-        None => {
-            println!("TODO: Lanzar la interfaz de usuario interactiva (TUI).");
-            Ok(())
+    // Lista de acciones de sistema conocidas.
+    const SYSTEM_ACTIONS: &[&str] = &[
+        "tree", "info", "open", "rename", "link", "unregister", "delete", 
+        "init", "register", "run", "start", "alias" // `alias` es futuro
+    ];
+
+    // --- Detección de Modo: Sesión vs. Script ---
+    if let Ok(project_uuid_str) = std::env::var("AXES_PROJECT_UUID") {
+        // --- MODO SESIÓN ---
+        let project_uuid = Uuid::parse_str(&project_uuid_str)
+            .context("La variable de entorno AXES_PROJECT_UUID es inválida.")?;
+        
+        // En modo sesión, el primer argumento SIEMPRE es la acción.
+        let action = cli.context_or_action
+            .ok_or_else(|| anyhow!("En modo sesión, se requiere una acción (ej: `axes tree`)."))?;
+        
+        // Los argumentos para la acción son todo lo que sigue.
+        let mut action_args = Vec::new();
+        if let Some(arg) = cli.action_or_arg {
+            action_args.push(arg);
         }
-        Some(context_or_action) => {
-            // 1. Comprobar si es una acción que no necesita contexto.
-            match context_or_action.as_str() {
-                "init" => {
-                    // `init` se maneja por separado.
-                    handle_init(cli.action_or_arg, cli.args)
-                }
-                // Si `tree` se llama sin contexto, asumimos `global tree`.
-                "tree" => {
-                    let index = index_manager::load_and_ensure_global_project()?;
-                    let global_uuid = index_manager::GLOBAL_PROJECT_UUID;
-                    let global_config = config_resolver::resolve_config_for_uuid(
-                        global_uuid,
-                        "global".to_string(),
-                        &index,
-                    )?;
-                    handle_tree(&global_config)
-                }
-                // Aquí se podrían añadir otros comandos globales como `register` en el futuro.
+        action_args.extend(cli.args);
 
-                // 2. Si no es una acción global, asumimos que es un contexto de proyecto.
-                project_context => {
-                    let index = index_manager::load_and_ensure_global_project()?;
-                    let (uuid, qualified_name) =
-                        context_resolver::resolve_context(project_context, &index)?;
-                    let config =
-                        config_resolver::resolve_config_for_uuid(uuid, qualified_name, &index)?;
-                    log::info!("Proyecto '{}' resuelto con éxito.", config.qualified_name);
+        // Resolver el contexto implícito desde la variable de entorno.
+        let index = index_manager::load_and_ensure_global_project()?;
+        //let entry = index.projects.get(&project_uuid)
+        //    .ok_or_else(|| anyhow!("El proyecto de la sesión actual (UUID: {}) ya no está registrado.", project_uuid))?;
+        
+        let qualified_name = index_manager::build_qualified_name(project_uuid, &index)
+            .ok_or_else(|| anyhow!("No se pudo reconstruir el nombre del proyecto de la sesión actual (UUID: {}). Posible enlace de padre roto en el índice.", project_uuid))?;
+            
+        log::info!("Modo Sesión: Ejecutando en el contexto implícito de '{}'", qualified_name);
+        
+        let config = config_resolver::resolve_config_for_uuid(project_uuid, qualified_name, &index)?;
 
-                    // El segundo argumento es la acción (o se infiere).
-                    handle_project_action(config, cli.action_or_arg, cli.args)
-                }
+        return handle_project_action(config, Some(action), action_args, SYSTEM_ACTIONS);
+
+    } else {
+        // --- MODO SCRIPT ---
+        
+        // 1. Manejar caso sin argumentos -> TUI
+        let arg1 = match cli.context_or_action {
+            Some(a) => a,
+            None => {
+                println!("TODO: Lanzar la interfaz de usuario interactiva (TUI).");
+                return Ok(());
+            }
+        };
+
+        let arg2 = cli.action_or_arg;
+        
+        // 2. Determinar orden y atajos
+        let (context_str, action_str, mut remaining_args) = 
+            determine_context_and_action(&arg1, arg2.as_deref(), SYSTEM_ACTIONS)?;
+        
+        // Añadir el resto de los args
+        remaining_args.extend(cli.args);
+        
+        // 3. Casos especiales que no resuelven contexto
+        if action_str == "init" || action_str == "register" {
+            let mut special_args = vec![context_str];
+            special_args.extend(remaining_args);
+
+            return match action_str.as_str() {
+                "init" => handle_init(special_args.get(0).cloned(), special_args.into_iter().skip(1).collect()),
+                "register" => handle_register(special_args.get(0).cloned(), special_args.into_iter().skip(1).collect()),
+                _ => unreachable!(),
+            };
+        }
+
+        // 4. Resolución y ejecución para todos los demás comandos
+        let index = index_manager::load_and_ensure_global_project()?;
+        let (uuid, qualified_name) = context_resolver::resolve_context(&context_str, &index)?;
+        let config = config_resolver::resolve_config_for_uuid(uuid, qualified_name, &index)?;
+        log::info!("Proyecto '{}' resuelto con éxito.", config.qualified_name);
+
+        return handle_project_action(config, Some(action_str), remaining_args, SYSTEM_ACTIONS);
+    }
+}
+
+/// Función auxiliar para determinar el contexto y la acción en modo script.
+fn determine_context_and_action<'a>(
+    arg1: &'a str, 
+    arg2: Option<&'a str>,
+    system_actions: &[&str]
+) -> Result<(String, String, Vec<String>)> {
+    
+    match arg2 {
+        Some(arg2_val) => {
+            // Caso: 2 o más argumentos
+            if system_actions.contains(&arg1) {
+                // Formato: `axes <acción> <contexto> [args...]`
+                Ok((arg2_val.to_string(), arg1.to_string(), Vec::new()))
+            } else if system_actions.contains(&arg2_val) {
+                // Formato: `axes <contexto> <acción> [args...]`
+                Ok((arg1.to_string(), arg2_val.to_string(), Vec::new()))
+            } else {
+                // Formato atajo `run`: `axes <contexto> <script> [args...]`
+                Ok((arg1.to_string(), "run".to_string(), vec![arg2_val.to_string()]))
+            }
+        }
+        None => {
+            // Caso: 1 solo argumento
+            if arg1 == "tree" {
+                // `axes tree` -> `axes global tree`
+                Ok(("global".to_string(), "tree".to_string(), Vec::new()))
+            } else {
+                // `axes mi-proyecto` -> `axes mi-proyecto start`
+                Ok((arg1.to_string(), "start".to_string(), Vec::new()))
             }
         }
     }
 }
 
+/// Maneja las acciones que operan sobre una configuración de proyecto ya resuelta.
+fn handle_project_action(
+    config: ResolvedConfig,
+    action_or_arg: Option<String>,
+    args: Vec<String>,
+    system_actions: &[&str],
+) -> Result<()> {
+    // La acción ya ha sido determinada por el despachador.
+    // El `action_or_arg` es la acción, y `args` son sus argumentos.
+    let action = action_or_arg.expect("La acción debería estar determinada en este punto.");
+
+    log::debug!(
+        "Manejando acción '{}' para el proyecto '{}'",
+        action,
+        config.qualified_name
+    );
+
+    match action.as_str() {
+        // Comandos de sistema
+        "tree" => handle_tree(&config),
+        "start" => handle_start(&config),
+        "info" => handle_info(&config),
+        "open" => handle_open(&config, args),
+        "rename" => handle_rename(&config, args),
+        "link" => handle_link(&config, args),
+        "unregister" => handle_unregister(&config, args),
+        "delete" => handle_delete(&config, args),
+        "run" => {
+            let script_name = args.first().cloned();
+            let params = args.into_iter().skip(1).collect();
+            handle_run(&config, script_name, params)
+        }
+        
+        // Caso de fallback: si la "acción" no es una acción de sistema,
+        // podría ser un atajo para `run` que el despachador no capturó (ej. modo sesión).
+        script_name if !system_actions.contains(&script_name) => {
+            handle_run(&config, Some(action), args)
+        }
+
+        // Si es una acción de sistema pero no tiene un `handle`, es un error.
+        unknown => {
+            anyhow::bail!(
+                "La acción '{}' es reconocida pero no está implementada.",
+                unknown
+            );
+        }
+    }
+}
+
+// --- MANEJADORES DE ACCIONES (Implementaciones) ---
+
+///Permite crear y registrar nuevos proyectos a axes.
 fn handle_init(name_arg: Option<String>, args: Vec<String>) -> Result<()> {
     let project_name = name_arg
         .ok_or_else(|| anyhow!("El comando 'init' requiere un nombre para el nuevo proyecto."))?;
@@ -127,7 +275,7 @@ fn handle_init(name_arg: Option<String>, args: Vec<String>) -> Result<()> {
 
     // 3. Añadir el nuevo proyecto al índice
     let canonical_path = current_dir.canonicalize()?;
-    let new_uuid = index_manager::add_project_to_index(&mut index, project_name.clone(), canonical_path.clone(), Some(final_parent_uuid))
+    let (new_uuid, _) = index_manager::add_project_to_index(&mut index, project_name.clone(), canonical_path.clone(), Some(final_parent_uuid))
         .context("No se pudo añadir el proyecto al índice global. Podría haber un proyecto hermano con el mismo nombre.")?;
 
     // 4. Crear la estructura de archivos del proyecto en el disco
@@ -161,66 +309,6 @@ fn handle_init(name_arg: Option<String>, args: Vec<String>) -> Result<()> {
         axes::constants::PROJECT_REF_FILENAME
     );
     println!("  Registrado correctamente en el índice global.");
-
-    Ok(())
-}
-
-/// Maneja las acciones que operan sobre una configuración de proyecto ya resuelta.
-fn handle_project_action(
-    config: ResolvedConfig,
-    action_or_arg: Option<String>,
-    args: Vec<String>,
-) -> Result<()> {
-    let action = action_or_arg.unwrap_or_else(|| {
-        if config.qualified_name == "global" {
-            "tree".to_string()
-        } else {
-            "start".to_string()
-        }
-    });
-
-    log::debug!(
-        "Manejando acción '{}' para el proyecto '{}'",
-        action,
-        config.qualified_name
-    );
-
-    match action.as_str() {
-        "tree" => handle_tree(&config),
-        "start" => handle_start(&config),
-        "run" => {
-            let script_name = args.first().cloned();
-            let params = args.into_iter().skip(1).collect();
-            handle_run(&config, script_name, params)
-        }
-        "info" => handle_info(&config),
-        "open" => handle_open(&config, args),
-        "rename" => handle_rename(&config, args),
-        "link" => handle_link(&config, args),
-
-        script_name if config.commands.contains_key(script_name) => {
-            handle_run(&config, Some(action), args)
-        }
-
-        unknown => {
-            anyhow::bail!(
-                "Acción desconocida '{}' para el proyecto '{}'.",
-                unknown,
-                config.qualified_name
-            );
-        }
-    }
-}
-
-// --- MANEJADORES DE ACCIONES (Implementaciones y Placeholders) ---
-
-/// Muestra el arbol de proyectos raíz.
-fn handle_tree(config: &ResolvedConfig) -> Result<()> {
-    println!("\nMostrando árbol desde: '{}'", config.qualified_name);
-    let index = index_manager::load_and_ensure_global_project()?;
-
-    // Llamar a la nueva versión de `display_project_tree`
-    graph_display::display_project_tree(&index, Some(config.uuid));
 
     Ok(())
 }
@@ -562,5 +650,170 @@ fn handle_rename(config: &ResolvedConfig, args: Vec<String>) -> Result<()> {
         "Nota: el nombre cualificado completo podría haber cambiado. Los cachés se regenerarán automáticamente en la próxima resolución."
     );
 
+    Ok(())
+}
+
+///Registrar proyecto existente.
+fn handle_unregister(config: &ResolvedConfig, args: Vec<String>) -> Result<()> {
+    let unregister_children = args.iter().any(|arg| arg == "--children");
+    let mut index = index_manager::load_and_ensure_global_project()?;
+
+    let mut uuids_to_unregister = vec![config.uuid];
+    if unregister_children {
+        println!(
+            "Recolectando todos los descendientes de '{}'...",
+            config.qualified_name
+        );
+        uuids_to_unregister.extend(index_manager::get_all_descendants(&index, config.uuid));
+    }
+
+    println!(
+        "\nSe desregistrarán las siguientes entradas de `axes` (los archivos no serán modificados):"
+    );
+    for uuid in &uuids_to_unregister {
+        if let Some(entry) = index.projects.get(uuid) {
+            println!("  - {} (en {})", entry.name, entry.path.display());
+        }
+    }
+
+    if !unregister_children
+        && index
+            .projects
+            .values()
+            .any(|e| e.parent == Some(config.uuid))
+    {
+        println!(
+            "\nNota: los hijos directos de '{}' se convertirán en hijos de 'global'.",
+            config.qualified_name
+        );
+    }
+
+    if !Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("¿Continuar?")
+        .default(false)
+        .interact()?
+    {
+        println!("Operación cancelada.");
+        return Ok(());
+    }
+
+    let should_reparent = !unregister_children;
+    let removed_count =
+        index_manager::remove_from_index(&mut index, &uuids_to_unregister, should_reparent);
+
+    index_manager::save_global_index(&index)?;
+
+    println!("\n✔ ¡Éxito! Se desregistraron {} proyectos.", removed_count);
+    Ok(())
+}
+
+/// Elimina un proyecto del índice.
+fn handle_delete(config: &ResolvedConfig, args: Vec<String>) -> Result<()> {
+    let delete_children = args.iter().any(|arg| arg == "--children");
+    let mut index = index_manager::load_and_ensure_global_project()?;
+
+    let mut uuids_to_process = vec![config.uuid];
+    if delete_children {
+        uuids_to_process.extend(index_manager::get_all_descendants(&index, config.uuid));
+    }
+
+    println!("\n**¡ADVERTENCIA: OPERACIÓN DESTRUCTIVA!**");
+    println!("Se eliminarán los directorios `.axes` Y se desregistrarán los siguientes proyectos:");
+
+    let mut paths_to_purge = Vec::new();
+    for uuid in &uuids_to_process {
+        if let Some(entry) = index.projects.get(uuid) {
+            println!("  - {} (en {})", entry.name, entry.path.display());
+            paths_to_purge.push(entry.path.join(AXES_DIR));
+        }
+    }
+
+    if !Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("¿ESTÁS SEGURO?")
+        .default(false)
+        .interact()?
+    {
+        println!("Operación cancelada.");
+        return Ok(());
+    }
+
+    // 1. Purgar archivos (lo hacemos primero, por si falla, no dejamos el índice inconsistente)
+    let mut purged_count = 0;
+    for path in paths_to_purge {
+        if path.exists() {
+            if fs::remove_dir_all(&path).is_ok() {
+                purged_count += 1;
+            } else {
+                eprintln!("Advertencia: no se pudo purgar {}", path.display());
+            }
+        }
+    }
+
+    // 2. Desregistrar del índice (nunca re-parentamos en un delete recursivo)
+    let removed_count = index_manager::remove_from_index(&mut index, &uuids_to_process, false);
+
+    index_manager::save_global_index(&index)?;
+
+    println!("\n✔ ¡Éxito!");
+    println!(
+        "Se eliminaron {} directorios `.axes` y se desregistraron {} proyectos.",
+        purged_count, removed_count
+    );
+    Ok(())
+}
+
+/// Registra un proyecto existente en el directorio actual o en una ruta especificada.
+fn handle_register(path_arg: Option<String>, args: Vec<String>) -> Result<()> {
+    // 1. Determinar la ruta objetivo
+    let path = match path_arg {
+        Some(ref p) if p != "--autosolve" => PathBuf::from(p),
+        _ => std::env::current_dir()?,
+    };
+
+    if !path.exists() {
+        return Err(anyhow!(
+            "La ruta especificada no existe: {}",
+            path.display()
+        ));
+    }
+
+    // 2. Parsear flags
+    let autosolve = args.iter().any(|arg| arg == "--autosolve")
+        || (path_arg.is_some() && path_arg.unwrap() == "--autosolve");
+
+    // 3. Cargar el índice
+    let mut index = index_manager::load_and_ensure_global_project()?;
+
+    // 4. Configurar opciones y llamar a la máquina de estados
+    let options = OnboardingOptions {
+        autosolve,
+        suggested_parent_uuid: None,
+    };
+
+    // Pasar las opciones como referencia
+    onboarding_manager::register_project(&path, &mut index, &options).context(format!(
+        "No se pudo registrar el proyecto en '{}'.",
+        path.display()
+    ))?;
+
+    // 5. Guardar los cambios realizados en el índice
+    index_manager::save_global_index(&index)?;
+
+    println!("\nOperación de registro finalizada.");
+    Ok(())
+}
+
+fn handle_tree(config: &ResolvedConfig) -> Result<()> {
+    // Si el contexto es `global`, pasamos `None` para que muestre todo.
+    // Si no, pasamos el UUID del proyecto.
+    let start_node = if config.uuid == index_manager::GLOBAL_PROJECT_UUID {
+        None
+    } else {
+        Some(config.uuid)
+    };
+
+    println!("\nMostrando árbol desde: '{}'", config.qualified_name);
+    let index = index_manager::load_and_ensure_global_project()?;
+    graph_display::display_project_tree(&index, start_node);
     Ok(())
 }

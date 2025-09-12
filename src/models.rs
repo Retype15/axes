@@ -82,18 +82,19 @@ impl ProjectConfig {
         );
         let mut open_with_defaults = HashMap::new();
         if cfg!(target_os = "windows") {
-            open_with_defaults.insert("default".to_string(), "explorer .".to_string());
-            open_with_defaults.insert("explorer".to_string(), "explorer .".to_string());
-            open_with_defaults.insert("vsc".to_string(), "code .".to_string());
+            open_with_defaults.insert("explorer".to_string(), "-explorer '{root}'".to_string());
+            open_with_defaults.insert("vsc".to_string(), "code {root}".to_string());
+            open_with_defaults.insert("default".to_string(), "explorer".to_string());
         } else if cfg!(target_os = "macos") {
-            open_with_defaults.insert("default".to_string(), "open .".to_string());
-            open_with_defaults.insert("finder".to_string(), "open .".to_string());
-            open_with_defaults.insert("vsc".to_string(), "code .".to_string());
+            open_with_defaults.insert("finder".to_string(), "open {root}".to_string());
+            open_with_defaults.insert("vsc".to_string(), "code {root}".to_string());
+            open_with_defaults.insert("default".to_string(), "finder".to_string());
         } else {
             // Linux y otros
-            open_with_defaults.insert("default".to_string(), "xdg-open .".to_string());
-            open_with_defaults.insert("nautilus".to_string(), "nautilus .".to_string());
-            open_with_defaults.insert("vsc".to_string(), "code .".to_string());
+            open_with_defaults.insert("xdg".to_string(), "xdg-open {root}".to_string());
+            open_with_defaults.insert("nautilus".to_string(), "nautilus {root}".to_string());
+            open_with_defaults.insert("vsc".to_string(), "code {root}".to_string());
+            open_with_defaults.insert("default".to_string(), "xdg".to_string());
         }
         Self {
             version: Some("0.1.0".to_string()),
