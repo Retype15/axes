@@ -1,6 +1,7 @@
 // src/system/shell.rs
 
 use crate::models::{ResolvedConfig, ShellConfig, ShellsConfig};
+use crate::system::executor;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -89,8 +90,29 @@ pub fn launch_interactive_shell(config: &ResolvedConfig) -> Result<(), ShellErro
         );
     }
 
-    // 5. La limpieza del archivo temporal es manejada automáticamente por `tempfile`
-    // cuando `temp_script_file` sale del scope.
+    // 5. **NUEVA LÓGICA**: Ejecutar el hook `at_exit`
+    if let Some(at_exit_command) = &config.options.at_exit
+        && !at_exit_command.trim().is_empty()
+    {
+        //println!("\nEjecutando hook 'at_exit'...");
+
+        // Usamos nuestro ejecutor de comandos estándar.
+        // No pasamos parámetros, pero sí el entorno del proyecto.
+        let interpolator = crate::core::interpolator::Interpolator::new(config, &[]);
+        let final_command = interpolator.interpolate(at_exit_command);
+
+        if let Err(e) = executor::execute_command(&final_command, &config.project_root, &config.env)
+        {
+            // Si `at_exit` falla, no queremos que toda la operación de `axes` falle.
+            // Es una operación de limpieza, por lo que solo mostramos una advertencia.
+            eprintln!(
+                "\nAdvertencia: El hook 'at_exit' falló al ejecutarse: {}",
+                e
+            );
+        }
+    }
+
+    // 6. Limpieza del archivo temporal (manejada por `tempfile`)
 
     Ok(())
 }

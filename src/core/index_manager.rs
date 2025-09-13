@@ -404,12 +404,16 @@ pub fn remove_from_index(
     let remove_set: std::collections::HashSet<Uuid> = uuids_to_remove.iter().cloned().collect();
 
     if should_reparent_orphans {
-        let children_to_reparent: Vec<Uuid> = index.projects.iter()
-            .filter(|(_, entry)| 
-            entry.parent.is_some_and(|p_uuid| remove_set.contains(&p_uuid))
-        )
-        .map(|(uuid, _)| *uuid)
-        .collect();
+        let children_to_reparent: Vec<Uuid> = index
+            .projects
+            .iter()
+            .filter(|(_, entry)| {
+                entry
+                    .parent
+                    .is_some_and(|p_uuid| remove_set.contains(&p_uuid))
+            })
+            .map(|(uuid, _)| *uuid)
+            .collect();
 
         for child_uuid in children_to_reparent {
             if let Some(child_entry) = index.projects.get_mut(&child_uuid) {
@@ -440,7 +444,7 @@ pub fn build_qualified_name(start_uuid: Uuid, index: &GlobalIndex) -> Option<Str
             parts.push(entry.name.clone());
             current_uuid = entry.parent;
             // Si el padre es `None`, hemos llegado a la raíz del árbol de `axes`.
-            if entry.parent.is_none() { 
+            if entry.parent.is_none() {
                 break;
             }
         } else {

@@ -91,9 +91,11 @@ fn handle_registration_with_ref(
     if let Some(existing_entry) = index.projects.get(&pref.self_uuid)
         && existing_entry.path != project_root
     {
-            // Conflicto de UUID
+        // Conflicto de UUID
         if options.autosolve {
-            return Err(OnboardingError::UuidConflict(existing_entry.path.display().to_string()));
+            return Err(OnboardingError::UuidConflict(
+                existing_entry.path.display().to_string(),
+            ));
         }
         let prompt = format!(
             "El UUID de este proyecto ya está registrado en otra ruta ({}). ¿Actualizar la ruta a la ubicación actual?",
@@ -106,7 +108,7 @@ fn handle_registration_with_ref(
         {
             return Err(OnboardingError::Cancelled);
         }
-            // El usuario aceptó, la actualización de la ruta se hará al final.
+        // El usuario aceptó, la actualización de la ruta se hará al final.
     }
 
     // 2. Validar Padre
@@ -114,7 +116,9 @@ fn handle_registration_with_ref(
         && !index.projects.contains_key(&parent_uuid)
     {
         if options.autosolve {
-            return Err(OnboardingError::Index(index_manager::IndexError::ProjectNotFoundInIndex { uuid: parent_uuid }));
+            return Err(OnboardingError::Index(
+                index_manager::IndexError::ProjectNotFoundInIndex { uuid: parent_uuid },
+            ));
         }
         println!(
             "Advertencia: El padre de este proyecto (UUID: {}) no está registrado.",
@@ -235,10 +239,11 @@ fn scan_and_register_children(
     index: &mut GlobalIndex,
     options: &OnboardingOptions,
 ) -> OnboardingResult<()> {
-    if !options.autosolve && !Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("¿Escanear subdirectorios en busca de hijos no registrados?")
-        .default(true)
-        .interact()? 
+    if !options.autosolve
+        && !Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("¿Escanear subdirectorios en busca de hijos no registrados?")
+            .default(true)
+            .interact()?
     {
         return Ok(());
     }

@@ -6,7 +6,7 @@ use std::{env, fs, path::Path};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::constants::{AXES_DIR};
+use crate::constants::AXES_DIR;
 use crate::core::index_manager::{self, GLOBAL_PROJECT_UUID};
 
 use crate::constants::LAST_USED_CACHE_FILENAME;
@@ -52,7 +52,9 @@ pub enum ContextError {
     },
     #[error("El alias '{name}!' no fue encontrado.")]
     AliasNotFound { name: String },
-    #[error("No se pudo resolver el nombre del proyecto para el alias (posible enlace de padre roto).")]
+    #[error(
+        "No se pudo resolver el nombre del proyecto para el alias (posible enlace de padre roto)."
+    )]
     AliasResolutionError,
     #[error("Operación cancelada por el usuario.")]
     Cancelled,
@@ -63,7 +65,9 @@ type ContextResult<T> = Result<T, ContextError>;
 /// Resuelve una ruta de proyecto a un UUID y un nombre cualificado.
 pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uuid, String)> {
     let parts: Vec<&str> = context.split('/').filter(|s| !s.is_empty()).collect();
-    if parts.is_empty() { return Err(ContextError::EmptyContext); }
+    if parts.is_empty() {
+        return Err(ContextError::EmptyContext);
+    }
 
     // 1. `resolve_first_part` ahora maneja toda la lógica inicial.
     let (mut current_uuid, mut current_parent_uuid) = resolve_first_part(parts[0], index)?;
@@ -73,7 +77,7 @@ pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uui
     //if parts.is_empty() { return Err(ContextError::EmptyContext); }
     //
     //let (mut current_uuid, mut current_parent_uuid) = resolve_first_part(parts[0], index)?;
-    
+
     // Iterar sobre el resto de las partes
     for part in &parts[1..] {
         let (next_uuid, next_parent_uuid) = match *part {
@@ -83,13 +87,13 @@ pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uui
                 let parent_uuid = current_parent_uuid.ok_or(ContextError::AlreadyAtRoot)?;
                 let parent_entry = index.projects.get(&parent_uuid).unwrap(); // Seguro
                 (parent_uuid, parent_entry.parent)
-            },
+            }
             "*" => {
                 let parent_entry = index.projects.get(&current_uuid).unwrap(); // Seguro
                 let child_uuid = resolve_last_used_child(current_uuid, parent_entry, index)?;
                 //let child_entry = index.projects.get(&child_uuid).unwrap(); // Seguro
                 (child_uuid, Some(current_uuid))
-            },
+            }
             name => {
                 let parent_entry = index.projects.get(&current_uuid).unwrap(); // Seguro
                 let child_uuid = find_child_by_name(current_uuid, parent_entry, name, index)?;
@@ -115,21 +119,27 @@ pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uui
 fn resolve_first_part(part: &str, index: &GlobalIndex) -> ContextResult<(Uuid, Option<Uuid>)> {
     // 1. Comprobar si es un alias.
     if let Some(alias_name) = part.strip_suffix('!') {
-        let uuid = index.aliases.get(alias_name)
-            .ok_or_else(|| ContextError::AliasNotFound { name: alias_name.to_string() })?;
-        
+        let uuid = index
+            .aliases
+            .get(alias_name)
+            .ok_or_else(|| ContextError::AliasNotFound {
+                name: alias_name.to_string(),
+            })?;
+
         let entry = index.projects.get(uuid).unwrap(); // Es seguro si el índice es consistente.
         return Ok((*uuid, entry.parent));
     }
-    
+
     // 2. Si no es un alias, usar la lógica de palabras clave y nombres de raíz.
     let uuid = match part {
         "**" => index.last_used.ok_or(ContextError::NoLastUsedProject)?,
         "*" => {
-            let global_entry = index.projects.get(&GLOBAL_PROJECT_UUID)
+            let global_entry = index
+                .projects
+                .get(&GLOBAL_PROJECT_UUID)
                 .expect("El proyecto global debe existir siempre.");
             resolve_last_used_child(GLOBAL_PROJECT_UUID, global_entry, index)?
-        },
+        }
         "." => find_project_from_path(&env::current_dir()?, true, index)?,
         "_" => find_project_from_path(&env::current_dir()?, false, index)?,
         // **"global" es un nombre explícito, el resto son hijos implícitos de `global`.
@@ -150,7 +160,10 @@ fn resolve_last_used_child(
     parent_entry: &IndexEntry,
     index: &GlobalIndex,
 ) -> ContextResult<Uuid> {
-    let cache_path = parent_entry.path.join(AXES_DIR).join(&LAST_USED_CACHE_FILENAME);
+    let cache_path = parent_entry
+        .path
+        .join(AXES_DIR)
+        .join(LAST_USED_CACHE_FILENAME);
     if let Ok(Some(cache)) = read_last_used_cache(&cache_path)
         && let Some(uuid) = cache.child_uuid
     {
@@ -196,29 +209,36 @@ fn resolve_last_used_child(
 }
 
 /// Encuentra el UUID de un proyecto buscando desde una ruta del sistema de archivos.
-fn find_project_from_path(path: &Path, search_up: bool, index: &GlobalIndex) -> ContextResult<Uuid> {
+fn find_project_from_path(
+    path: &Path,
+    search_up: bool,
+    index: &GlobalIndex,
+) -> ContextResult<Uuid> {
     let current_path = dunce::canonicalize(path)?;
 
     if search_up {
         // Modo '.' (búsqueda ascendente)
-        let mut candidates: Vec<(Uuid, &IndexEntry)> = index.projects.iter()
+        let mut candidates: Vec<(Uuid, &IndexEntry)> = index
+            .projects
+            .iter()
             .filter(|(_, entry)| current_path.starts_with(&entry.path))
             .map(|(uuid, entry)| (*uuid, entry))
             .collect();
-        
+
         if candidates.is_empty() {
             return Err(ContextError::ProjectNotFoundFromPath);
         }
 
         // Ordenar por longitud de la ruta, de más larga a más corta.
         candidates.sort_by_key(|(_, entry)| std::cmp::Reverse(entry.path.as_os_str().len()));
-        
+
         // El primer candidato es el más específico (el "ancestro" más cercano).
         Ok(candidates[0].0)
-
     } else {
         // Modo '_' (búsqueda estricta en el directorio actual)
-        index.projects.iter()
+        index
+            .projects
+            .iter()
             .find(|(_, entry)| entry.path == current_path)
             .map(|(uuid, _)| *uuid)
             .ok_or(ContextError::ProjectNotFoundInCwd)
@@ -303,7 +323,10 @@ fn update_last_used_caches(final_uuid: Uuid, index: &GlobalIndex) -> ContextResu
             let cache = LastUsedCache {
                 child_uuid: Some(child_uuid_to_save),
             };
-            let cache_path = parent_entry.path.join(AXES_DIR).join(&LAST_USED_CACHE_FILENAME);
+            let cache_path = parent_entry
+                .path
+                .join(AXES_DIR)
+                .join(LAST_USED_CACHE_FILENAME);
 
             // Llamar a la función que antes no se usaba
             write_last_used_cache(&cache_path, &cache)?;
