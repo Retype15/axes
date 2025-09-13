@@ -1,9 +1,9 @@
+name = "Axes"
 version = "0.1.0"
 description = "A new project managed by axes."
 
 [commands]
-hello = "echo 'Hello from axes!'"
-exit = "echo 'Saliendo....' && exit"
+hello = "echo 'Hello from {name}!'"
 pause = "pause"
 build = "{v_build}"
 replace = "{v_replace}"
