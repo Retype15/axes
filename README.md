@@ -1,6 +1,6 @@
 # axes: El Orquestador de Flujos de Trabajo
 
-**Tu GPS para proyectos complejos. El control remoto universal para tus herramientas de desarrollo.**
+**Tu GPS para proyectos complejos. El control remoto universal para tus herramientas de desarrollo. Un *eje central* en la gestión de proyectos a nivel profesional**
 
 [![CI/CD Status](https://img.shields.io/badge/build-passing-brightgreen)](#)
 [![Version](https://img.shields.io/badge/version-v0.1.3--alpha-blue)](#)
@@ -52,7 +52,8 @@ Vamos a crear y gestionar un pequeño monorepo para ver el poder de `axes` en ac
         - Para **Windows**: `axes-x86_64-pc-windows-msvc.zip`
         - Para **Linux**: `axes-x86_64-unknown-linux-gnu.tar.gz` *(no disponible aún)*
         - Para **macOS**: `axes-x86_64-apple-darwin.zip` *(no disponible aún)*
-    **Nota:** *No disponible* significa que aún no ha sido compilado para dicho SO, si quiere usarlo en su sistema deberá compilarlo desde el codigo fuente.
+
+**Nota:** *No disponible* significa que aún no ha sido compilado para dicho SO, si quiere usarlo en su sistema deberá compilarlo desde el codigo fuente.
 
 2. **Descomprime el Archivo:**
     - Extrae el contenido del archivo `.zip` o `.tar.gz`. Dentro encontrarás un único archivo ejecutable: `axes.exe` (en Windows) o `axes` (en Linux/macOS).
