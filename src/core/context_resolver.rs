@@ -50,6 +50,10 @@ pub enum ContextError {
         child_name: String,
         parent_name: String,
     },
+    #[error("El alias '${name}' no fue encontrado.")]
+    AliasNotFound { name: String },
+    #[error("No se pudo resolver el nombre del proyecto para el alias (enlace de padre roto).")]
+    AliasResolutionError,
     #[error("Operación cancelada por el usuario.")]
     Cancelled,
 }
@@ -58,40 +62,45 @@ type ContextResult<T> = Result<T, ContextError>;
 
 /// Resuelve una ruta de proyecto a un UUID y un nombre cualificado.
 pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uuid, String)> {
-    let parts: Vec<&str> = context.split('/').filter(|s| !s.is_empty()).collect();
-    if parts.is_empty() {
-        return Err(ContextError::EmptyContext);
+    // 1. Manejar el caso de alias primero.
+    if let Some(alias_name) = context.strip_prefix('$') {
+        let target_uuid = index.aliases.get(alias_name)
+            .ok_or_else(|| ContextError::AliasNotFound { name: alias_name.to_string() })?;
+        
+        let qualified_name = index_manager::build_qualified_name(*target_uuid, index)
+            .ok_or(ContextError::AliasResolutionError)?;
+            
+        // No necesitamos `update_last_used_caches` aquí, porque el alias ya resuelve a un UUID concreto.
+        // La actualización de `last_used` ocurre cuando se usa el alias para una acción.
+        return Ok((*target_uuid, qualified_name));
     }
 
-    let mut resolved_parts: Vec<String> = Vec::new();
+    // 2. Si no es un alias, proceder con la resolución de ruta normal.
+    let parts: Vec<&str> = context.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() { return Err(ContextError::EmptyContext); }
 
-    // 1. Resolver la primera parte para obtener el estado inicial
     let (mut current_uuid, mut current_parent_uuid) = resolve_first_part(parts[0], index)?;
-    resolved_parts.push(index.projects.get(&current_uuid).unwrap().name.clone());
-
-    // 2. Iterar sobre el resto de las partes
-    for part in parts.iter().skip(1) {
+    
+    // Iterar sobre el resto de las partes
+    for part in &parts[1..] {
         let (next_uuid, next_parent_uuid) = match *part {
             "**" => return Err(ContextError::GlobalRecentNotAtStart),
             "." | "_" => return Err(ContextError::LocalPathNotAtStart),
             ".." => {
                 let parent_uuid = current_parent_uuid.ok_or(ContextError::AlreadyAtRoot)?;
                 let parent_entry = index.projects.get(&parent_uuid).unwrap(); // Seguro
-                resolved_parts.pop(); // Quitar el nombre del hijo actual
                 (parent_uuid, parent_entry.parent)
-            }
+            },
             "*" => {
                 let parent_entry = index.projects.get(&current_uuid).unwrap(); // Seguro
                 let child_uuid = resolve_last_used_child(current_uuid, parent_entry, index)?;
                 let child_entry = index.projects.get(&child_uuid).unwrap(); // Seguro
-                resolved_parts.push(child_entry.name.clone());
                 (child_uuid, Some(current_uuid))
-            }
+            },
             name => {
                 let parent_entry = index.projects.get(&current_uuid).unwrap(); // Seguro
                 let child_uuid = find_child_by_name(current_uuid, parent_entry, name, index)?;
                 let child_entry = index.projects.get(&child_uuid).unwrap(); // Seguro
-                resolved_parts.push(child_entry.name.clone());
                 (child_uuid, Some(current_uuid))
             }
         };
@@ -99,10 +108,14 @@ pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uui
         current_parent_uuid = next_parent_uuid;
     }
 
-    // FIXME: Update last used caches for the entire resolved path.
+    // Al final de la travesía, actualizar los cachés de "último usado"
     update_last_used_caches(current_uuid, index)?;
 
-    Ok((current_uuid, resolved_parts.join("/")))
+    // Reconstruir el nombre cualificado completo para el UUID final.
+    let final_qualified_name = index_manager::build_qualified_name(current_uuid, index)
+        .ok_or(ContextError::AliasResolutionError)?; // Reutilizamos el error
+
+    Ok((current_uuid, final_qualified_name))
 }
 
 /// Resuelve la primera parte de la ruta, que tiene reglas especiales.

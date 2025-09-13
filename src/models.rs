@@ -124,6 +124,8 @@ pub struct IndexEntry {
 pub struct GlobalIndex {
     #[serde(default)]
     pub projects: HashMap<Uuid, IndexEntry>,
+    #[serde(default)]
+    pub aliases: HashMap<String, Uuid>,
     pub last_used: Option<Uuid>,
 }
 

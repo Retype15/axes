@@ -32,8 +32,7 @@ fn main() {
     // Esto se ejecuta en un hilo separado cuando se presiona Ctrl+C.
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-        // Podríamos imprimir un mensaje, pero a veces es mejor ser silencioso.
-        println!("\nInterrupción recibida, terminando...");
+        println!("\nPor favor no intente cerrar forzosamente, puede cerrar de forma segura el shell usando `exit`.");
     }).expect("Error al establecer el manejador de Ctrl-C");
 
 
