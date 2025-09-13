@@ -82,7 +82,7 @@ Si tienes [Rust](https://www.rust-lang.org/tools/install) instalado, también pu
 ```sh
 git clone https://github.com/Retype15/axes.git
 cd axes
-cargo build --release
+cargo build --release # O si ya tiene el proyecto en su ordenador, puede simplemente compilar con `axes build .` (puede revisar el .axes/axes.toml del propio proyecto, no tiene mucho, pero puede usarlo para testear.)
 # El ejecutable estará en ./target/release/axes
 ```
 
