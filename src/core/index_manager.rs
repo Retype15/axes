@@ -58,9 +58,16 @@ pub fn load_and_ensure_global_project() -> IndexResult<GlobalIndex> {
             path: config_dir.clone(), // Clonar para usarla después
             parent: None,
         };
-        e.insert(global_entry);
+        e.insert(global_entry.clone());
 
-        // **NUEVO**: Crear los archivos físicos para el proyecto `global`.
+        index.projects.insert(GLOBAL_PROJECT_UUID, global_entry);
+
+        // Si el alias `g` no existe, crearlo.
+        if !index.aliases.contains_key("g") {
+            log::debug!("Creando alias por defecto 'g' para el proyecto global.");
+            index.aliases.insert("g".to_string(), GLOBAL_PROJECT_UUID);
+        }
+
         // 1. Crear el `axes.toml` por defecto.
         let axes_dir = config_dir.join(crate::constants::AXES_DIR);
         fs::create_dir_all(&axes_dir)?;
@@ -444,4 +451,21 @@ pub fn build_qualified_name(start_uuid: Uuid, index: &GlobalIndex) -> Option<Str
 
     parts.reverse();
     Some(parts.join("/"))
+}
+
+// Alias Handlers
+
+/// Establece o actualiza un alias en el índice.
+pub fn set_alias(index: &mut GlobalIndex, name: String, target_uuid: Uuid) {
+    index.aliases.insert(name, target_uuid);
+}
+
+/// Elimina un alias del índice. Devuelve `true` si el alias existía.
+pub fn remove_alias(index: &mut GlobalIndex, name: &str) -> bool {
+    // Proteger el alias 'g'
+    if name.to_lowercase() == "g" {
+        log::warn!("No se puede eliminar el alias protegido 'g'.");
+        return false;
+    }
+    index.aliases.remove(name).is_some()
 }

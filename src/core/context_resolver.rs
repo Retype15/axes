@@ -50,9 +50,9 @@ pub enum ContextError {
         child_name: String,
         parent_name: String,
     },
-    #[error("El alias '${name}' no fue encontrado.")]
+    #[error("El alias '{name}!' no fue encontrado.")]
     AliasNotFound { name: String },
-    #[error("No se pudo resolver el nombre del proyecto para el alias (enlace de padre roto).")]
+    #[error("No se pudo resolver el nombre del proyecto para el alias (posible enlace de padre roto).")]
     AliasResolutionError,
     #[error("Operación cancelada por el usuario.")]
     Cancelled,
@@ -62,24 +62,17 @@ type ContextResult<T> = Result<T, ContextError>;
 
 /// Resuelve una ruta de proyecto a un UUID y un nombre cualificado.
 pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uuid, String)> {
-    // 1. Manejar el caso de alias primero.
-    if let Some(alias_name) = context.strip_prefix('$') {
-        let target_uuid = index.aliases.get(alias_name)
-            .ok_or_else(|| ContextError::AliasNotFound { name: alias_name.to_string() })?;
-        
-        let qualified_name = index_manager::build_qualified_name(*target_uuid, index)
-            .ok_or(ContextError::AliasResolutionError)?;
-            
-        // No necesitamos `update_last_used_caches` aquí, porque el alias ya resuelve a un UUID concreto.
-        // La actualización de `last_used` ocurre cuando se usa el alias para una acción.
-        return Ok((*target_uuid, qualified_name));
-    }
-
-    // 2. Si no es un alias, proceder con la resolución de ruta normal.
     let parts: Vec<&str> = context.split('/').filter(|s| !s.is_empty()).collect();
     if parts.is_empty() { return Err(ContextError::EmptyContext); }
 
+    // 1. `resolve_first_part` ahora maneja toda la lógica inicial.
     let (mut current_uuid, mut current_parent_uuid) = resolve_first_part(parts[0], index)?;
+
+    // 2. Si no es un alias, proceder con la resolución de ruta normal.
+    //let parts: Vec<&str> = context.split('/').filter(|s| !s.is_empty()).collect();
+    //if parts.is_empty() { return Err(ContextError::EmptyContext); }
+    //
+    //let (mut current_uuid, mut current_parent_uuid) = resolve_first_part(parts[0], index)?;
     
     // Iterar sobre el resto de las partes
     for part in &parts[1..] {
@@ -94,13 +87,13 @@ pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uui
             "*" => {
                 let parent_entry = index.projects.get(&current_uuid).unwrap(); // Seguro
                 let child_uuid = resolve_last_used_child(current_uuid, parent_entry, index)?;
-                let child_entry = index.projects.get(&child_uuid).unwrap(); // Seguro
+                //let child_entry = index.projects.get(&child_uuid).unwrap(); // Seguro
                 (child_uuid, Some(current_uuid))
             },
             name => {
                 let parent_entry = index.projects.get(&current_uuid).unwrap(); // Seguro
                 let child_uuid = find_child_by_name(current_uuid, parent_entry, name, index)?;
-                let child_entry = index.projects.get(&child_uuid).unwrap(); // Seguro
+                //let child_entry = index.projects.get(&child_uuid).unwrap(); // Seguro
                 (child_uuid, Some(current_uuid))
             }
         };
@@ -120,6 +113,16 @@ pub fn resolve_context(context: &str, index: &GlobalIndex) -> ContextResult<(Uui
 
 /// Resuelve la primera parte de la ruta, que tiene reglas especiales.
 fn resolve_first_part(part: &str, index: &GlobalIndex) -> ContextResult<(Uuid, Option<Uuid>)> {
+    // 1. Comprobar si es un alias.
+    if let Some(alias_name) = part.strip_suffix('!') {
+        let uuid = index.aliases.get(alias_name)
+            .ok_or_else(|| ContextError::AliasNotFound { name: alias_name.to_string() })?;
+        
+        let entry = index.projects.get(uuid).unwrap(); // Es seguro si el índice es consistente.
+        return Ok((*uuid, entry.parent));
+    }
+    
+    // 2. Si no es un alias, usar la lógica de palabras clave y nombres de raíz.
     let uuid = match part {
         "**" => index.last_used.ok_or(ContextError::NoLastUsedProject)?,
         "*" => {
@@ -129,7 +132,7 @@ fn resolve_first_part(part: &str, index: &GlobalIndex) -> ContextResult<(Uuid, O
         },
         "." => find_project_from_path(&env::current_dir()?, true, index)?,
         "_" => find_project_from_path(&env::current_dir()?, false, index)?,
-        // **NUEVA LÓGICA**: "global" es un nombre explícito, el resto son hijos implícitos de `global`.
+        // **"global" es un nombre explícito, el resto son hijos implícitos de `global`.
         "global" => GLOBAL_PROJECT_UUID,
         name => {
             // Es una ruta implícita, buscar como hijo de `global`.

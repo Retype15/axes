@@ -60,140 +60,102 @@ fn main() {
 fn run_cli(cli: Cli) -> Result<()> {
     log::debug!("CLI args parsed: {:?}", cli);
 
-    // Lista de acciones de sistema conocidas.
-    const SYSTEM_ACTIONS: &[&str] = &[
+    const SYSTEM_PROJECT_ACTIONS: &[&str] = &[
         "tree", "info", "open", "rename", "link", "unregister", "delete", 
-        "init", "register", "run", "start", "alias" // `alias` es futuro
+        "run", "start"
     ];
+    const SYSTEM_GLOBAL_ACTIONS: &[&str] = &["init", "register", "alias"];
 
-    // --- Detección de Modo: Sesión vs. Script ---
+    // 1. Parseo Inicial
+    let arg1 = match cli.context_or_action {
+        Some(a) => a,
+        None => {
+            println!("TODO: Lanzar la TUI.");
+            return Ok(());
+        }
+    };
+
+    let mut remaining_args = Vec::new();
+    if let Some(arg2) = cli.action_or_arg {
+        remaining_args.push(arg2);
+    }
+    remaining_args.extend(cli.args);
+
+    // 2. Filtro de Acciones Globales
+    if SYSTEM_GLOBAL_ACTIONS.contains(&arg1.as_str()) {
+        let action = arg1;
+        let sub_command_or_context = remaining_args.get(0).cloned();
+        let final_args = remaining_args.into_iter().skip(1).collect();
+        
+        return match action.as_str() {
+            "init" => handle_init(sub_command_or_context, final_args),
+            "register" => handle_register(sub_command_or_context, final_args),
+            "alias" => handle_alias(sub_command_or_context, final_args),
+            _ => unreachable!(),
+        };
+    }
+
+    // 3. Detección de Modo y Ejecución
     if let Ok(project_uuid_str) = std::env::var("AXES_PROJECT_UUID") {
         // --- MODO SESIÓN ---
-        let project_uuid = Uuid::parse_str(&project_uuid_str)
-            .context("La variable de entorno AXES_PROJECT_UUID es inválida.")?;
-        
-        // En modo sesión, el primer argumento SIEMPRE es la acción.
-        let action = cli.context_or_action
-            .ok_or_else(|| anyhow!("En modo sesión, se requiere una acción (ej: `axes tree`)."))?;
-        
-        // Los argumentos para la acción son todo lo que sigue.
-        let mut action_args = Vec::new();
-        if let Some(arg) = cli.action_or_arg {
-            action_args.push(arg);
-        }
-        action_args.extend(cli.args);
+        let action = arg1;
+        let args = remaining_args;
 
-        // Resolver el contexto implícito desde la variable de entorno.
+        let project_uuid = Uuid::parse_str(&project_uuid_str)?;
         let index = index_manager::load_and_ensure_global_project()?;
-        //let entry = index.projects.get(&project_uuid)
-        //    .ok_or_else(|| anyhow!("El proyecto de la sesión actual (UUID: {}) ya no está registrado.", project_uuid))?;
-        
         let qualified_name = index_manager::build_qualified_name(project_uuid, &index)
-            .ok_or_else(|| anyhow!("No se pudo reconstruir el nombre del proyecto de la sesión actual (UUID: {}). Posible enlace de padre roto en el índice.", project_uuid))?;
-            
-        log::info!("Modo Sesión: Ejecutando en el contexto implícito de '{}'", qualified_name);
-        
+            .ok_or_else(|| anyhow!("No se pudo reconstruir el nombre del proyecto de la sesión."))?;
         let config = config_resolver::resolve_config_for_uuid(project_uuid, qualified_name, &index)?;
 
-        return handle_project_action(config, Some(action), action_args, SYSTEM_ACTIONS);
+        // Llamar al despachador de acciones de proyecto
+        execute_project_action(config, action, args, SYSTEM_PROJECT_ACTIONS)?;
 
     } else {
         // --- MODO SCRIPT ---
-        
-        // 1. Manejar caso sin argumentos -> TUI
-        let arg1 = match cli.context_or_action {
-            Some(a) => a,
-            None => {
-                println!("TODO: Lanzar la interfaz de usuario interactiva (TUI).");
-                return Ok(());
-            }
+        let arg2 = remaining_args.first();
+
+        let (context_str, action_str, final_args) = if SYSTEM_PROJECT_ACTIONS.contains(&arg1.as_str()) {
+            // Formato: `axes <acción> <contexto> [args...]`
+            let context = arg2.cloned().ok_or_else(|| anyhow!("La acción '{}' requiere un contexto de proyecto.", arg1))?;
+            (context, arg1, remaining_args.into_iter().skip(1).collect())
+        } else {
+            // Formato: `axes <contexto> [acción?] [args...]`
+            let context = arg1;
+            let action = arg2.cloned().unwrap_or_else(|| "start".to_string());
+            let args = remaining_args.into_iter().skip(1).collect();
+            (context, action, args)
         };
-
-        let arg2 = cli.action_or_arg;
         
-        // 2. Determinar orden y atajos
-        let (context_str, action_str, mut remaining_args) = 
-            determine_context_and_action(&arg1, arg2.as_deref(), SYSTEM_ACTIONS)?;
-        
-        // Añadir el resto de los args
-        remaining_args.extend(cli.args);
-        
-        // 3. Casos especiales que no resuelven contexto
-        if action_str == "init" || action_str == "register" {
-            let mut special_args = vec![context_str];
-            special_args.extend(remaining_args);
-
-            return match action_str.as_str() {
-                "init" => handle_init(special_args.get(0).cloned(), special_args.into_iter().skip(1).collect()),
-                "register" => handle_register(special_args.get(0).cloned(), special_args.into_iter().skip(1).collect()),
-                _ => unreachable!(),
-            };
+        // `tree` sin contexto (o con `global`) es un caso especial
+        if action_str == "tree" && (context_str == "global" || context_str.is_empty()) {
+            return handle_tree(None);
         }
-
-        // 4. Resolución y ejecución para todos los demás comandos
+        
         let index = index_manager::load_and_ensure_global_project()?;
         let (uuid, qualified_name) = context_resolver::resolve_context(&context_str, &index)?;
         let config = config_resolver::resolve_config_for_uuid(uuid, qualified_name, &index)?;
-        log::info!("Proyecto '{}' resuelto con éxito.", config.qualified_name);
-
-        return handle_project_action(config, Some(action_str), remaining_args, SYSTEM_ACTIONS);
+        
+        execute_project_action(config, action_str, final_args, SYSTEM_PROJECT_ACTIONS)?;
     }
-}
-
-/// Función auxiliar para determinar el contexto y la acción en modo script.
-fn determine_context_and_action<'a>(
-    arg1: &'a str, 
-    arg2: Option<&'a str>,
-    system_actions: &[&str]
-) -> Result<(String, String, Vec<String>)> {
     
-    match arg2 {
-        Some(arg2_val) => {
-            // Caso: 2 o más argumentos
-            if system_actions.contains(&arg1) {
-                // Formato: `axes <acción> <contexto> [args...]`
-                Ok((arg2_val.to_string(), arg1.to_string(), Vec::new()))
-            } else if system_actions.contains(&arg2_val) {
-                // Formato: `axes <contexto> <acción> [args...]`
-                Ok((arg1.to_string(), arg2_val.to_string(), Vec::new()))
-            } else {
-                // Formato atajo `run`: `axes <contexto> <script> [args...]`
-                Ok((arg1.to_string(), "run".to_string(), vec![arg2_val.to_string()]))
-            }
-        }
-        None => {
-            // Caso: 1 solo argumento
-            if arg1 == "tree" {
-                // `axes tree` -> `axes global tree`
-                Ok(("global".to_string(), "tree".to_string(), Vec::new()))
-            } else {
-                // `axes mi-proyecto` -> `axes mi-proyecto start`
-                Ok((arg1.to_string(), "start".to_string(), Vec::new()))
-            }
-        }
-    }
+    Ok(())
 }
 
-/// Maneja las acciones que operan sobre una configuración de proyecto ya resuelta.
-fn handle_project_action(
+/// Ejecuta una acción que opera sobre una configuración de proyecto ya resuelta.
+fn execute_project_action(
     config: ResolvedConfig,
-    action_or_arg: Option<String>,
+    action: String,
     args: Vec<String>,
     system_actions: &[&str],
 ) -> Result<()> {
-    // La acción ya ha sido determinada por el despachador.
-    // El `action_or_arg` es la acción, y `args` son sus argumentos.
-    let action = action_or_arg.expect("La acción debería estar determinada en este punto.");
-
     log::debug!(
-        "Manejando acción '{}' para el proyecto '{}'",
+        "Ejecutando acción '{}' para el proyecto '{}'",
         action,
         config.qualified_name
     );
 
     match action.as_str() {
-        // Comandos de sistema
-        "tree" => handle_tree(&config),
+        "tree" => handle_tree(Some(config)),
         "start" => handle_start(&config),
         "info" => handle_info(&config),
         "open" => handle_open(&config, args),
@@ -206,19 +168,12 @@ fn handle_project_action(
             let params = args.into_iter().skip(1).collect();
             handle_run(&config, script_name, params)
         }
-        
-        // Caso de fallback: si la "acción" no es una acción de sistema,
-        // podría ser un atajo para `run` que el despachador no capturó (ej. modo sesión).
+        // Atajo para `run`
         script_name if !system_actions.contains(&script_name) => {
             handle_run(&config, Some(action), args)
         }
-
-        // Si es una acción de sistema pero no tiene un `handle`, es un error.
-        unknown => {
-            anyhow::bail!(
-                "La acción '{}' es reconocida pero no está implementada.",
-                unknown
-            );
+        _ => {
+            anyhow::bail!("La acción del sistema '{}' es válida pero no tiene un manejador implementado.", action);
         }
     }
 }
@@ -763,56 +718,134 @@ fn handle_delete(config: &ResolvedConfig, args: Vec<String>) -> Result<()> {
 
 /// Registra un proyecto existente en el directorio actual o en una ruta especificada.
 fn handle_register(path_arg: Option<String>, args: Vec<String>) -> Result<()> {
-    // 1. Determinar la ruta objetivo
-    let path = match path_arg {
-        Some(ref p) if p != "--autosolve" => PathBuf::from(p),
-        _ => std::env::current_dir()?,
-    };
+    // 1. Determinar la ruta y los flags de forma robusta.
+    // `path_arg` es el contexto que nos pasa el despachador.
+    // `args` son los argumentos adicionales.
+    
+    let mut path_to_register = PathBuf::from("."); // Por defecto, el directorio actual
+    let mut autosolve = false;
 
-    if !path.exists() {
-        return Err(anyhow!(
-            "La ruta especificada no existe: {}",
-            path.display()
-        ));
+    // Juntar todos los posibles argumentos en una sola lista para el parseo.
+    let mut all_args = Vec::new();
+    if let Some(p) = path_arg {
+        all_args.push(p);
+    }
+    all_args.extend(args);
+
+    // Iterar para encontrar la ruta y el flag.
+    let mut path_found = false;
+    for arg in all_args {
+        if arg == "--autosolve" {
+            autosolve = true;
+        } else if !path_found {
+            // El primer argumento que no es un flag es la ruta.
+            path_to_register = PathBuf::from(arg);
+            path_found = true;
+        } else {
+            // Ya encontramos una ruta, cualquier otro argumento posicional es un error.
+            return Err(anyhow!("Argumento inesperado '{}' para el comando 'register'.", arg));
+        }
+    }
+    
+    if !path_to_register.exists() {
+        return Err(anyhow!("La ruta especificada no existe: {}", path_to_register.display()));
     }
 
-    // 2. Parsear flags
-    let autosolve = args.iter().any(|arg| arg == "--autosolve")
-        || (path_arg.is_some() && path_arg.unwrap() == "--autosolve");
-
-    // 3. Cargar el índice
+    // 2. Cargar el índice
     let mut index = index_manager::load_and_ensure_global_project()?;
-
-    // 4. Configurar opciones y llamar a la máquina de estados
+    
+    // 3. Configurar opciones y llamar a la máquina de estados
     let options = OnboardingOptions {
         autosolve,
         suggested_parent_uuid: None,
     };
 
-    // Pasar las opciones como referencia
-    onboarding_manager::register_project(&path, &mut index, &options).context(format!(
-        "No se pudo registrar el proyecto en '{}'.",
-        path.display()
-    ))?;
-
-    // 5. Guardar los cambios realizados en el índice
+    onboarding_manager::register_project(&path_to_register, &mut index, &options)
+        .context(format!("No se pudo registrar el proyecto en '{}'.", path_to_register.display()))?;
+    
+    // 4. Guardar los cambios
     index_manager::save_global_index(&index)?;
 
     println!("\nOperación de registro finalizada.");
     Ok(())
 }
 
-fn handle_tree(config: &ResolvedConfig) -> Result<()> {
-    // Si el contexto es `global`, pasamos `None` para que muestre todo.
-    // Si no, pasamos el UUID del proyecto.
-    let start_node = if config.uuid == index_manager::GLOBAL_PROJECT_UUID {
-        None
-    } else {
-        Some(config.uuid)
-    };
-
-    println!("\nMostrando árbol desde: '{}'", config.qualified_name);
+fn handle_tree(config: Option<ResolvedConfig>) -> Result<()> {
     let index = index_manager::load_and_ensure_global_project()?;
-    graph_display::display_project_tree(&index, start_node);
+    match config {
+        Some(conf) => {
+            println!("\nMostrando árbol desde: '{}'", conf.qualified_name);
+            let start_node = if conf.uuid == index_manager::GLOBAL_PROJECT_UUID { None } else { Some(conf.uuid) };
+            graph_display::display_project_tree(&index, start_node);
+        }
+        None => { // Caso Global
+            graph_display::display_project_tree(&index, None);
+        }
+    }
+    Ok(())
+}
+
+/// Gestiona los alias de proyectos.
+fn handle_alias(subcommand: Option<String>, args: Vec<String>) -> Result<()> {
+    // Si no hay subcomando, el default es `list`.
+    let subcommand = subcommand.as_deref().unwrap_or("list");
+
+    let mut index = index_manager::load_and_ensure_global_project()?;
+
+    match subcommand {
+        "set" => {
+            let alias_name = args.get(0).ok_or_else(|| anyhow!("El subcomando 'set' requiere un nombre de alias."))?;
+            let context = args.get(1).ok_or_else(|| anyhow!("El subcomando 'set' requiere un contexto de proyecto."))?;
+
+            // Validar nombre del alias
+            let clean_alias_name = alias_name.strip_suffix('!').unwrap_or(alias_name);
+            if clean_alias_name.is_empty() || clean_alias_name.contains('/') {
+                return Err(anyhow!("El nombre del alias '{}' es inválido.", alias_name));
+            }
+            if clean_alias_name.to_lowercase() == "g" {
+                return Err(anyhow!("No se puede sobreescribir el alias protegido 'g!'"));
+            }
+
+            // Resolver el contexto para obtener el UUID
+            let (target_uuid, target_name) = context_resolver::resolve_context(context, &index)?;
+            
+            index_manager::set_alias(&mut index, clean_alias_name.to_string(), target_uuid);
+            index_manager::save_global_index(&index)?;
+
+            println!("✔ Alias '{}!' establecido para apuntar a '{}'.", clean_alias_name, target_name);
+        }
+        "list" | "ls" => {
+            if index.aliases.is_empty() {
+                println!("No hay alias definidos. Usa `axes alias set <nombre> <contexto>` para crear uno.");
+                return Ok(());
+            }
+
+            println!("Alias definidos:");
+            // Para una tabla bonita, podríamos usar `prettytable-rs`, pero por ahora esto es suficiente.
+            let mut sorted_aliases: Vec<_> = index.aliases.iter().collect();
+            sorted_aliases.sort_by_key(|(name, _)| *name);
+
+            for (name, uuid) in sorted_aliases {
+                let target_name = index_manager::build_qualified_name(*uuid, &index)
+                    .unwrap_or_else(|| "<enlace roto>".to_string());
+                println!("  {}!  ->  {}", name, target_name);
+            }
+        }
+        "rm" | "remove" | "delete" => {
+            let alias_name = args.get(0).ok_or_else(|| anyhow!("Se requiere un nombre de alias para eliminar."))?;
+            let clean_alias_name = alias_name.strip_suffix('!').unwrap_or(alias_name);
+
+            if index_manager::remove_alias(&mut index, clean_alias_name) {
+                index_manager::save_global_index(&index)?;
+                println!("✔ Alias '{}!' eliminado.", clean_alias_name);
+            } else {
+                return Err(anyhow!("El alias '{}!' no fue encontrado o no se puede eliminar.", clean_alias_name));
+            }
+        }
+        _ => {
+            return Err(anyhow!("Subcomando desconocido para 'alias'. Opciones válidas: set, list, rm."));
+        }
+    }
+
     Ok(())
 }
